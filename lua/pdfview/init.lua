@@ -29,6 +29,9 @@ local NOTE_TYPES = { Text = true, FreeText = true }
 M.config = {
   -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
   keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a' },
+  -- Page pane width: a fraction (< 1) of the columns it shares with the text window, or a
+  -- number of columns. Reapplied when the terminal is resized; <C-w> resizes otherwise stick.
+  pane_width = 0.6,
   -- Where snapshots are written. nil: $TMPDIR/pdfview.
   snapshot_dir = nil, ---@type string?
 }
@@ -201,6 +204,14 @@ local function close_pane(st)
 end
 
 local unsupported_reported = false
+local MIN_TEXT_WIDTH = 20
+
+--- Pane columns out of `total`, the columns the text window and pane share (separator excluded).
+local function pane_columns(total)
+  local w = M.config.pane_width
+  local cols = w < 1 and math.floor(total * w + 0.5) or math.floor(w)
+  return math.max(1, math.min(cols, total - MIN_TEXT_WIDTH))
+end
 
 local function open_pane(buf, win)
   local st = states[buf]
@@ -220,7 +231,8 @@ local function open_pane(buf, win)
   vim.bo[pbuf].bufhidden = 'wipe'
   vim.bo[pbuf].filetype = 'pdfview_page'
   vim.bo[pbuf].modifiable = false
-  local pwin = api.nvim_open_win(pbuf, false, { split = 'right', win = win })
+  local width = pane_columns(api.nvim_win_get_width(win) - 1)
+  local pwin = api.nvim_open_win(pbuf, false, { split = 'right', win = win, width = width })
   -- :setlocal, so a buffer that later replaces the pane gets normal window options.
   local wo = {
     number = false,
@@ -235,6 +247,8 @@ local function open_pane(buf, win)
     spell = false,
     wrap = false,
     winfixbuf = true,
+    -- Keep the configured width through <C-w>= and other windows opening or closing.
+    winfixwidth = true,
   }
   for option, value in pairs(wo) do
     vim.wo[pwin][0][option] = value
@@ -727,9 +741,13 @@ function M.setup(opts)
   })
   api.nvim_create_autocmd({ 'WinResized', 'VimResized' }, {
     group = GROUP,
-    callback = function()
-      for buf in pairs(states) do
+    callback = function(ev)
+      for buf, st in pairs(states) do
         local win = vim.fn.win_findbuf(buf)[1]
+        if win and ev.event == 'VimResized' and pane_valid(st) then
+          local total = api.nvim_win_get_width(win) + api.nvim_win_get_width(st.pane.win)
+          api.nvim_win_set_width(st.pane.win, pane_columns(total))
+        end
         if win then render(buf, win) end
       end
     end,

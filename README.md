@@ -60,6 +60,10 @@ Defaults:
 require('pdfview').setup {
   -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
   keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a' },
+  -- Page pane width: a fraction (< 1) of the columns it shares with the text window, or a
+  -- number of columns. Reapplied when the terminal is resized (including font zoom);
+  -- resizing by hand (<C-w><, :vertical resize, dragging the separator) sticks otherwise.
+  pane_width = 0.6,
   -- Where snapshots are written. nil: $TMPDIR/pdfview.
   snapshot_dir = nil,
 }
