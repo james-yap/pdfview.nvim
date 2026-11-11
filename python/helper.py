@@ -279,6 +279,16 @@ def fmt_rect(r):
     return "(%.0f, %.0f)–(%.0f, %.0f)" % (r.x0, r.y0, r.x1, r.y1)
 
 
+def m_char_boxes(p):
+    """[x0, y0, x1, y1] (page points) of each [lnum, char index] in p["chars"]."""
+    d = docs[p["key"]]
+    result = []
+    for lnum, ci in p["chars"]:
+        boxes = d.boxes[lnum - 1]
+        result.append(list(boxes[min(ci, len(boxes) - 1)]))
+    return result
+
+
 METHODS = {
     "open": m_open,
     "close": m_close,
@@ -288,6 +298,7 @@ METHODS = {
     "delete": m_delete,
     "save": m_save,
     "snapshot": m_snapshot,
+    "char_boxes": m_char_boxes,
 }
 
 

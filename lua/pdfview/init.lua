@@ -20,7 +20,8 @@ local ROOT = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(debug.getinfo(1, 'S').
 local HELPER = vim.fs.joinpath(ROOT, 'python', 'helper.py')
 local NS = api.nvim_create_namespace 'pdfview'
 local GROUP = api.nvim_create_augroup('pdfview', { clear = true })
-local COLORS = { cursor = 0xDDEBFF, selection = 0xA8D1FF } -- tints for the page pane / snapshot
+-- Tints for the page pane / snapshot (multiplied over the page, so ink stays dark).
+local COLORS = { cursor = 0xDDEBFF, cursor_char = 0x8AB8FF, selection = 0xA8D1FF }
 local HL = { Highlight = 'PdfViewHighlight', Underline = 'PdfViewUnderline', StrikeOut = 'PdfViewStrikeOut', Squiggly = 'PdfViewSquiggly' }
 local NOTE_TYPES = { Text = true, FreeText = true }
 
@@ -102,6 +103,12 @@ local function call(method, params)
   if not vim.wait(120000, function() return done end, 5) then error('PDF helper timed out: ' .. method, 0) end
   if err then error(err, 0) end
   return result
+end
+
+local function try_call(method, params)
+  local ok, res = pcall(call, method, params)
+  if not ok then notify(res, vim.log.levels.ERROR) end
+  return ok and res or nil
 end
 
 -- Text geometry --------------------------------------------------------------
@@ -262,18 +269,22 @@ local function view_for(buf, win)
   return { page = page, y0 = y0, h = h, clip = { 0, y0, pw, y0 + h }, width = math.floor(px_w), cols = cols, rows = rows }
 end
 
+--- The selection (visual mode in `win`) or else the cursor line, plus the character under the cursor.
 local function marks_for(buf, win, page)
   local st = states[buf]
-  if win == api.nvim_get_current_win() then
-    local ranges = selection(buf)
-    if ranges then
-      ranges = vim.tbl_filter(function(r) return st.info[r[1]][1] == page end, ranges)
-      return { { ranges = ranges, color = COLORS.selection } }
-    end
+  local lnum, col = unpack(api.nvim_win_get_cursor(win))
+  local marks = {}
+  local ranges = win == api.nvim_get_current_win() and selection(buf)
+  if ranges then
+    ranges = vim.tbl_filter(function(r) return st.info[r[1]][1] == page end, ranges)
+    marks[1] = { ranges = ranges, color = COLORS.selection }
   end
-  local lnum = api.nvim_win_get_cursor(win)[1]
-  if st.info[lnum][4] then return {} end
-  return { { ranges = { { lnum, 0, vim.str_utfindex(st.lines[lnum], 'utf-32') - 1 } }, color = COLORS.cursor } }
+  if st.info[lnum][4] then return marks end
+  local text = st.lines[lnum]
+  if not ranges then marks[1] = { ranges = { { lnum, 0, vim.str_utfindex(text, 'utf-32') - 1 } }, color = COLORS.cursor } end
+  local ci = char_index(text, col)
+  marks[#marks + 1] = { ranges = { { lnum, ci, ci } }, color = COLORS.cursor_char }
+  return marks
 end
 
 --- Point the pane at a freshly rendered PNG (the terminal deletes the file).
@@ -341,6 +352,76 @@ local function refresh(buf)
   end)
 end
 
+-- leap.nvim labels on the page pane ------------------------------------------
+
+local NS_LABELS = api.nvim_create_namespace 'pdfview.labels'
+
+local function clear_labels()
+  for _, st in pairs(states) do
+    if pane_valid(st) then api.nvim_buf_clear_namespace(st.pane.buf, NS_LABELS, 0, -1) end
+  end
+end
+
+--- Copy the labels leap is about to draw in PDF buffers onto their page panes,
+--- in the cell over each target's first character.
+local function mirror_labels(targets, first, last)
+  local by_buf = {}
+  for i = first or 1, last or #targets do
+    local t = targets[i]
+    local buf = t.wininfo and t.wininfo.bufnr
+    local st = states[buf]
+    local virt_text = t.beacon and t.beacon[2].virt_text
+    if virt_text and t.pos and st and st.view and pane_valid(st) then
+      local lnum = t.pos[1]
+      if not st.info[lnum][4] and st.info[lnum][1] == st.view.page then
+        by_buf[buf] = by_buf[buf] or {}
+        table.insert(by_buf[buf], { lnum = lnum, char = char_index(st.lines[lnum], t.pos[2] - 1 + t.beacon[1]), virt_text = virt_text })
+      end
+    end
+  end
+  local cell = kitty.cell_size()
+  if not cell then return end
+  for buf, labels in pairs(by_buf) do
+    local st = states[buf]
+    local boxes = try_call('char_boxes', { key = buf, chars = vim.tbl_map(function(l) return { l.lnum, l.char } end, labels) })
+    if boxes then
+      local v = st.view
+      local zoom = v.width / (v.clip[3] - v.clip[1])
+      for i, l in ipairs(labels) do
+        local b = boxes[i]
+        local width = 0
+        for _, chunk in ipairs(l.virt_text) do
+          width = width + api.nvim_strwidth(chunk[1])
+        end
+        local row = math.floor(((b[2] + b[4]) / 2 - v.clip[2]) * zoom / cell.height)
+        local col = math.min(math.floor((b[1] - v.clip[1]) * zoom / cell.width), v.cols - width)
+        if row >= 0 and row < v.rows and col >= 0 then
+          api.nvim_buf_set_extmark(st.pane.buf, NS_LABELS, row, 0, { virt_text = l.virt_text, virt_text_win_col = col, strict = false })
+        end
+      end
+    end
+  end
+end
+
+-- leap's `on_beacons` hook (an experimental escape hatch in its README) sees
+-- every target with its label right before leap draws it. Wrap any existing
+-- hook rather than replace it; re-checked on every leap call in case the user
+-- sets their own later.
+local leap_hook
+local function hook_leap()
+  local ok, leap = pcall(require, 'leap')
+  if not ok then return end
+  -- rawget: leap's opts table recurses forever on unset keys.
+  local defaults = leap.opts
+  local prev = rawget(defaults, 'on_beacons')
+  if leap_hook and prev == leap_hook then return end
+  leap_hook = function(targets, first, last)
+    if prev and prev(targets, first, last) == false then return false end
+    mirror_labels(targets, first, last)
+  end
+  defaults.on_beacons = leap_hook
+end
+
 -- Annotation actions ---------------------------------------------------------
 
 local function apply(buf, res)
@@ -351,12 +432,6 @@ local function apply(buf, res)
   vim.bo[buf].modified = true
   decorate(buf)
   render(buf, api.nvim_get_current_win())
-end
-
-local function try_call(method, params)
-  local ok, res = pcall(call, method, params)
-  if not ok then notify(res, vim.log.levels.ERROR) end
-  return ok and res or nil
 end
 
 local function under_cursor(buf)
@@ -658,6 +733,9 @@ function M.setup(opts)
       end
     end,
   })
+  -- leap fires LeapRedraw before drawing each round of labels, and LeapLeave at the end.
+  api.nvim_create_autocmd('User', { group = GROUP, pattern = 'LeapEnter', callback = hook_leap })
+  api.nvim_create_autocmd('User', { group = GROUP, pattern = { 'LeapRedraw', 'LeapLeave' }, callback = clear_labels })
   -- Free image data held by the terminal.
   api.nvim_create_autocmd('VimLeavePre', {
     group = GROUP,
