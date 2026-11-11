@@ -3,24 +3,27 @@
 Read and annotate PDFs in Neovim with ordinary Vim motions, and hand what you are
 looking at to an AI agent as one captioned image.
 
-Opening a `.pdf` gives you two windows:
+Opening a `.pdf` fills its window with the rendered pages, stacked vertically for
+continuous scrolling. The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks,
+visual mode and yanking still operate on real buffer text. The view follows the
+cursor, tints its line or visual selection, and marks the character under the cursor.
+The cursor becomes hollow when you leave the PDF window or the terminal loses focus.
+A document-wide scrollbar at the right edge marks page boundaries.
 
-- a **text buffer** with the PDF's text, one line per PDF text line, where `hjkl`, `/`,
-  `w`, visual mode and jump plugins such as [leap.nvim](https://codeberg.org/andyg/leap.nvim)
-  work as usual;
-- a **page pane** showing the rendered page. It frames the lines the text window shows
-  (scrolling the text window scrolls the pane) and greys out the rest of the page, so what
-  is bright is exactly what `/` and leap can reach. It tints the cursor line or the visual
-  selection and marks the character under the cursor, so you always see where you are on
-  the real page. When the text window shows more than fits, the pane follows the cursor
-  instead. A thin scrollbar on its right edge shows where the visible part sits in the
-  whole document, with a tick at each page boundary (ticks are left out when pages are too
-  close together to tell apart).
+`<leader>pt` toggles the extracted text alongside the pages, useful for inspecting
+reading order or checking what a yank copies. Neither layout greys out page content.
 
-With leap.nvim, its jump labels also appear on the page pane, over the words they point
-to. pdfview hooks in through leap's `on_beacons` option (any function you set there keeps
-working). Labels on the pane are placed to the nearest terminal cell, so two labels on
-neighbouring words can occasionally share a cell.
+With [leap.nvim](https://codeberg.org/andyg/leap.nvim), pdfview supplies targets for
+everything visible on the rendered pages, including text outside the hidden text
+window's viewport and in other columns. Your keys mapped to `<Plug>(leap)` are
+automatically overridden in PDF buffers (or set `keys.leap` explicitly). Type two
+characters, then use Leap's usual labels, autojump and traversal. Matching is
+case-insensitive and respects Leap's equivalence classes. Labels appear after the
+second character: Leap's first-character preview is not used, and repeating a
+custom-target jump asks for its characters again.
+
+Labels are mirrored through Leap's `on_beacons` hook (any existing hook is preserved).
+They snap to terminal cells, so very close matches can share a label cell.
 
 Annotations (highlight, underline, strikethrough, notes) are standard PDF annotations, so
 other PDF viewers show them too.
@@ -62,8 +65,11 @@ Defaults:
 ```lua
 require('pdfview').setup {
   -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
-  keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a' },
-  -- Page pane width: a fraction (< 1) of the columns it shares with the text window, or a
+  keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil },
+  -- leap = nil: use keys mapped to <Plug>(leap); a string sets a key; false disables it.
+  -- 'page': full-window rendered pages with hidden text. 'split': text + page pane.
+  view = 'page',
+  -- Split mode pane width: a fraction (< 1) of the columns it shares with the text window, or a
   -- number of columns. Reapplied when the terminal is resized (including font zoom);
   -- resizing by hand (<C-w><, :vertical resize, dragging the separator) sticks otherwise.
   pane_width = 0.6,
@@ -79,6 +85,7 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | Key | Mode | Action |
 | --- | --- | --- |
 | `<leader>py` | n, x | Snapshot for an agent (see below) |
+| `<leader>pt` | n | Toggle full-window pages / text with page pane |
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
@@ -89,6 +96,24 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `]a` / `[a` | n | Next / previous annotation (takes a count) |
 
 Notes open in a small floating window: `:w` saves, `q` saves and closes.
+
+In full-window page mode these keys operate on the rendered view (in normal and visual
+mode); in split mode they retain their native text-window behaviour:
+
+| Key | Action |
+| --- | --- |
+| `<C-e>` / `<C-y>` | Scroll down / up a terminal row (takes a count) |
+| `<C-d>` / `<C-u>` | Scroll half a view; an explicit count scrolls that many rows |
+| `<C-f>` / `<C-b>` | Scroll down / up a view with two rows of overlap (takes a count) |
+| Mouse wheel | Scroll the pages |
+| `zt` / `zz` / `zb` | Put the cursor line near the top / middle / bottom |
+| `H` / `M` / `L` | Move to a line near the top / middle / bottom |
+| Left click | Move to the character you clicked |
+
+Scrolling keeps the cursor in view where there is text. Search still covers the whole
+document; incremental and last-search matches are tinted on the rendered pages.
+Selections and yanks use the extracted text's reading order, not a two-dimensional
+screen rectangle. Use `v` or `V` for selection; mouse dragging is not used in page mode.
 
 ## Annotations and saving
 
@@ -109,13 +134,14 @@ newer file; `:e!` picks up the new version.
 
 ## Snapshots for agents
 
-`<leader>py` renders exactly what the page pane shows (or the cursor's whole page when there
-is no pane), with the visual selection tinted, and adds a caption strip below it:
+`<leader>py` captures the visible regions of the stacked pages (or the cursor's whole
+page when there is no rendered view), with the visual selection tinted, and adds a
+caption strip below it:
 
 - the PDF's absolute path,
-- page number and the visible area in PDF points,
-- the selection's bounding box,
-- the text of every note visible on that part of the page.
+- each visible page number and its visible area in PDF points,
+- the selection's bounding box and page,
+- the text of every note visible on those parts of the pages.
 
 The result is one PNG, so it works both in a local agent harness (via its path) and in a
 web chat (paste the image). Vision models read the page text from the image; the caption
@@ -126,6 +152,11 @@ carries what the image cannot show, such as where the page lives on disk and the
 - `python/helper.py` (PyMuPDF) extracts the text with each character's position, renders
   page regions, edits annotations and builds snapshots. Neovim talks to one helper process
   per session over JSON lines.
+- In page mode a non-focusable image float covers the normal PDF window. A second,
+  hidden float on the text buffer holds focus and inherits the window's jumplist and
+  alternate file. Vim handles ordinary text motions and operators; pdfview only maps
+  view-specific controls. Buffer switches from the hidden float are handed back to the
+  normal window; closing it closes the PDF window too.
 - The page pane uses the kitty graphics protocol with Unicode placeholders
   (`lua/pdfview/kitty.lua`): the image is drawn through placeholder characters in the pane
   buffer, so splits and floating windows cover it correctly. Rendered pages are handed to
@@ -142,6 +173,21 @@ Filetypes: `pdfview` (text buffer), `pdfview_page` (pane). Highlight groups, all
 - Scanned PDFs (no text layer), encrypted PDFs and rotated pages are not supported.
 - A selection (for annotations or snapshots) must stay on one page.
 - No tmux support for the page pane.
+- Search highlighting is line-local (multi-line patterns still navigate through native
+  search). The text layer must contain the characters you want to search or jump to.
+- One rendered view is kept per PDF buffer; additional splits of that buffer can show
+  its extracted text.
+
+## Checks
+
+```sh
+uv run --with 'pymupdf>=1.26,<1.27' tests/test_helper.py
+```
+
+This checks continuous page composition, clipping, hit testing, snapshots, hollow
+cursors and headless Neovim interactions. To include the Leap regression (jumping
+to visible page text outside the hidden text viewport), set `PDFVIEW_LEAP_RTP` to
+your installed `leap.nvim` directory when running the command.
 
 ## License
 

@@ -133,93 +133,90 @@ class Doc:
         return page, annot
 
 
-def tint(pix, rect, matrix, color):
-    """Multiply-blend `color` over `rect` (page coords): white turns `color`, ink stays dark."""
-    irect = (rect * matrix).irect & pix.irect
+def tint(pix, rect, matrix, color, outline=False):
+    """Multiply-blend `color` over `rect` (page coords), optionally only its border."""
+    outer = (rect * matrix).irect
+    irect = outer & pix.irect
     if irect.is_empty:
         return
     sub = pymupdf.Pixmap(pix.colorspace, irect, False)
     sub.copy(pix, irect)
     sub.tint_with(0x000000, color)
+    if outline:
+        stroke = max(1, round(matrix.a * 0.7))
+        inner = pymupdf.IRect(outer.x0 + stroke, outer.y0 + stroke, outer.x1 - stroke, outer.y1 - stroke) & irect
+        if not inner.is_empty:
+            sub.copy(pix, inner)
     pix.copy(sub, irect)
 
 
-# Ink and paper colours outside the text window's lines (washed out, still legible).
-DIM = (0x8C8C8C, 0xE2E2E2)
-
-
-def lit_rects(d, pno, first, last):
-    """Areas (page coords) of buffer lines first..last that are on page `pno`.
-    Consecutive lines going down the same column merge into one block, so the
-    gaps between them stay lit and each column of a multi-column page gets its own."""
-    blocks = []
-    for lnum in range(first, last + 1):
-        info = d.info[lnum - 1]
-        if info[0] != pno or info[3]:
-            continue
-        rect = d.range_rect(lnum, 0, len(d.boxes[lnum - 1]) - 1)
-        b = blocks[-1] if blocks else None
-        if b and rect.x0 < b.x1 and rect.x1 > b.x0 and rect.y0 >= b.y1 - rect.height:
-            blocks[-1] = b | rect
-        else:
-            blocks.append(rect)
-    return [pymupdf.Rect(b.x0 - 4, b.y0 - 2, b.x1 + 4, b.y1 + 2) for b in blocks]
-
-
-def dim_outside(pix, rects, matrix):
-    """Copy of `pix` washed out everywhere except inside `rects` (page coords)."""
-    out = pymupdf.Pixmap(pix.colorspace, pix.irect, False)
-    out.copy(pix, pix.irect)
-    out.tint_with(*DIM)
-    for rect in rects:
-        irect = (rect * matrix).irect & pix.irect
-        if not irect.is_empty:
-            out.copy(pix, irect)
-    return out
-
-
-def render_clip(d, pno, clip, width, marks, lit=None):
-    """`lit`: [first, last] buffer lines to keep bright; the rest of the page is dimmed."""
+def render_clip(d, pno, clip, width, marks):
     clip = pymupdf.Rect(clip)
     zoom = width / clip.width
     matrix = pymupdf.Matrix(zoom, zoom)
     pix = d.doc[pno].get_pixmap(matrix=matrix, clip=clip, annots=True, alpha=False)
     for mark in marks or []:
         for lnum, cs, ce in mark["ranges"]:
-            tint(pix, d.range_rect(lnum, cs, ce), matrix, mark["color"])
-    if lit:
-        pix = dim_outside(pix, lit_rects(d, pno, *lit), matrix)
+            tint(pix, d.range_rect(lnum, cs, ce), matrix, mark["color"], mark.get("outline", False))
     return pix
 
 
+GAP_COLOR = (48, 48, 48)
 SCROLLBAR = {"track": (224, 224, 224), "tick": (160, 160, 160), "thumb": (80, 80, 80)}
 
 
-def scrollbar(pix, d, pno, clip):
+def page_heights(d, width):
+    """Page heights in pixels when each page is scaled to `width` pixels."""
+    return [page.rect.height * width / page.rect.width for page in d.doc]
+
+
+def render_view(d, width, height, top, gap, marks):
+    """The pages stacked at `width` px wide with `gap` px between them, cut
+    from `top` px down `height` px. Marks tint only the page their lines are on."""
+    out = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height), False)
+    out.set_rect(out.irect, GAP_COLOR)
+    y = 0.0
+    for pno, h in enumerate(page_heights(d, width)):
+        if y >= top + height:
+            break
+        if y + h > top:
+            pw = d.doc[pno].rect.width
+            scale = width / pw
+            a, b = max(top, y), min(top + height, y + h)
+            page_marks = []
+            for mark in marks or []:
+                ranges = [r for r in mark["ranges"] if d.info[r[0] - 1][0] == pno]
+                if ranges:
+                    page_marks.append({**mark, "ranges": ranges})
+            pix = render_clip(d, pno, (0, (a - y) / scale, pw, (b - y) / scale), width, page_marks)
+            pix.set_origin(0, round(a - top))
+            out.copy(pix, pymupdf.IRect(pix.irect) & out.irect)
+        y += h + gap
+    return out
+
+
+def scrollbar(pix, d, top, gap):
     """Document-wide scrollbar on the right edge of `pix`: the thumb is the visible
-    part of the whole PDF (pages stacked), with ticks at page boundaries."""
-    clip = pymupdf.Rect(clip)
-    heights = [page.rect.height for page in d.doc]
-    total = sum(heights)
+    part of the stacked pages, with ticks at page boundaries."""
+    heights = page_heights(d, pix.width)
+    total = sum(heights) + gap * (len(heights) - 1)
     h = pix.height
     width = max(12, pix.width // 60)
-    # A clipped pixmap keeps the clip's pixel origin; set_rect takes those coordinates.
-    ox, oy = pix.x + pix.width - width, pix.y
+    ox = pix.width - width
 
     def bar(y0, y1, color, inset=0):
-        pix.set_rect(pymupdf.IRect(ox + inset, oy + y0, ox + width - inset, oy + y1), color)
+        pix.set_rect(pymupdf.IRect(ox + inset, y0, ox + width - inset, y1), color)
 
     bar(0, h, SCROLLBAR["track"])
     # Ticks closer than 3px would merge into a solid band; skip them.
     if h * min(heights) / total >= 3:
-        top = 0
+        y = 0
         for height in heights[:-1]:
-            top += height
-            y = round(h * top / total)
-            bar(y, y + 1, SCROLLBAR["tick"])
-    start = sum(heights[:pno]) + clip.y0
-    y0 = min(round(h * start / total), h - 6)
-    y1 = min(max(y0 + 6, round(h * (start + clip.height) / total)), h)
+            y += height + gap
+            tick = round(h * y / total)
+            bar(tick, tick + 1, SCROLLBAR["tick"])
+    y0 = min(round(h * top / total), h - 6)
+    y1 = min(max(y0 + 6, round(h * (top + h) / total)), h)
     bar(y0, y1, SCROLLBAR["thumb"], inset=2)
 
 
@@ -245,11 +242,11 @@ def m_close(p):
 
 def m_render(p):
     d = docs[p["key"]]
-    pix = render_clip(d, p["page"], p["clip"], p["width"], p.get("marks"), p.get("lit"))
+    pix = render_view(d, p["width"], p["height"], p["top"], p["gap"], p.get("marks"))
     if p.get("scrollbar"):
-        scrollbar(pix, d, p["page"], p["clip"])
+        scrollbar(pix, d, p["top"], p["gap"])
     pix.save(p["out"])
-    return {"width": pix.width, "height": pix.height}
+    return {}
 
 
 def m_annotate(p):
@@ -307,23 +304,31 @@ def m_save(p):
 
 def m_snapshot(p):
     d = docs[p["key"]]
-    pno, clip, ranges = p["page"], pymupdf.Rect(p["clip"]), p.get("ranges") or []
+    top, height, gap, width = p["top"], p["height"], p["gap"], p["width"]
+    ranges = p.get("ranges") or []
     marks = [{"ranges": ranges, "color": p["color"]}] if ranges else []
-    pix = render_clip(d, pno, clip, p["width"], marks)
+    pix = render_view(d, width, height, top, gap, marks)
 
-    rows = [
-        "<b>%s</b>" % html.escape(d.path),
-        "page %d of %d · view %s pt" % (pno + 1, len(d.doc), fmt_rect(clip)),
-    ]
+    rows = ["<b>%s</b>" % html.escape(d.path)]
+    y = 0.0
+    for pno, h in enumerate(page_heights(d, width)):
+        if y >= top + height:
+            break
+        if y + h > top:
+            pw = d.doc[pno].rect.width
+            scale = width / pw
+            clip = pymupdf.Rect(0, max(0, (top - y) / scale), pw, min(h, top + height - y) / scale)
+            rows.append("page %d of %d · view %s pt" % (pno + 1, len(d.doc), fmt_rect(clip)))
+            for annot in d.doc[pno].annots(types=SUPPORTED):
+                text = annot.info.get("content", "").strip()
+                if text and annot.rect.intersects(clip):
+                    rows.append("<b>page %d %s note:</b> %s" % (pno + 1, annot.type[1], html.escape(text)))
+        y += h + gap
     if ranges:
         sel = d.range_rect(*ranges[0])
         for r in ranges[1:]:
             sel |= d.range_rect(*r)
-        rows.append("selection %s pt" % fmt_rect(sel))
-    for annot in d.doc[pno].annots(types=SUPPORTED):
-        text = annot.info.get("content", "").strip()
-        if text and annot.rect.intersects(clip):
-            rows.append("<b>%s note:</b> %s" % (annot.type[1], html.escape(text)))
+        rows.append("selection on page %d: %s pt" % (d.info[ranges[0][0] - 1][0] + 1, fmt_rect(sel)))
 
     w, h = pix.width, pix.height
     font = max(14, round(w / 80))
@@ -360,6 +365,23 @@ def m_char_boxes(p):
     return result
 
 
+def m_hit(p):
+    """[lnum, char index] of the character nearest page point (x, y) on page
+    p["page"], or None on a page without text. Vertical distance counts double,
+    so a click between two lines picks the nearer line, not a far character."""
+    d = docs[p["key"]]
+    x, y = p["x"], p["y"]
+    best = None
+    for lnum in d.page_lines[p["page"]]:
+        for ci, box in enumerate(d.boxes[lnum - 1]):
+            dx = max(box.x0 - x, 0, x - box.x1)
+            dy = max(box.y0 - y, 0, y - box.y1)
+            dist = dx * dx + 4 * dy * dy
+            if best is None or dist < best[0]:
+                best = (dist, lnum, ci)
+    return best and [best[1], best[2]]
+
+
 METHODS = {
     "open": m_open,
     "close": m_close,
@@ -370,6 +392,7 @@ METHODS = {
     "save": m_save,
     "snapshot": m_snapshot,
     "char_boxes": m_char_boxes,
+    "hit": m_hit,
 }
 
 
