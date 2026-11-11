@@ -144,7 +144,42 @@ def tint(pix, rect, matrix, color):
     pix.copy(sub, irect)
 
 
-def render_clip(d, pno, clip, width, marks):
+# Ink and paper colours outside the text window's lines (washed out, still legible).
+DIM = (0x8C8C8C, 0xE2E2E2)
+
+
+def lit_rects(d, pno, first, last):
+    """Areas (page coords) of buffer lines first..last that are on page `pno`.
+    Consecutive lines going down the same column merge into one block, so the
+    gaps between them stay lit and each column of a multi-column page gets its own."""
+    blocks = []
+    for lnum in range(first, last + 1):
+        info = d.info[lnum - 1]
+        if info[0] != pno or info[3]:
+            continue
+        rect = d.range_rect(lnum, 0, len(d.boxes[lnum - 1]) - 1)
+        b = blocks[-1] if blocks else None
+        if b and rect.x0 < b.x1 and rect.x1 > b.x0 and rect.y0 >= b.y1 - rect.height:
+            blocks[-1] = b | rect
+        else:
+            blocks.append(rect)
+    return [pymupdf.Rect(b.x0 - 4, b.y0 - 2, b.x1 + 4, b.y1 + 2) for b in blocks]
+
+
+def dim_outside(pix, rects, matrix):
+    """Copy of `pix` washed out everywhere except inside `rects` (page coords)."""
+    out = pymupdf.Pixmap(pix.colorspace, pix.irect, False)
+    out.copy(pix, pix.irect)
+    out.tint_with(*DIM)
+    for rect in rects:
+        irect = (rect * matrix).irect & pix.irect
+        if not irect.is_empty:
+            out.copy(pix, irect)
+    return out
+
+
+def render_clip(d, pno, clip, width, marks, lit=None):
+    """`lit`: [first, last] buffer lines to keep bright; the rest of the page is dimmed."""
     clip = pymupdf.Rect(clip)
     zoom = width / clip.width
     matrix = pymupdf.Matrix(zoom, zoom)
@@ -152,6 +187,8 @@ def render_clip(d, pno, clip, width, marks):
     for mark in marks or []:
         for lnum, cs, ce in mark["ranges"]:
             tint(pix, d.range_rect(lnum, cs, ce), matrix, mark["color"])
+    if lit:
+        pix = dim_outside(pix, lit_rects(d, pno, *lit), matrix)
     return pix
 
 
@@ -208,7 +245,7 @@ def m_close(p):
 
 def m_render(p):
     d = docs[p["key"]]
-    pix = render_clip(d, p["page"], p["clip"], p["width"], p.get("marks"))
+    pix = render_clip(d, p["page"], p["clip"], p["width"], p.get("marks"), p.get("lit"))
     if p.get("scrollbar"):
         scrollbar(pix, d, p["page"], p["clip"])
     pix.save(p["out"])

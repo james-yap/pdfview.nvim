@@ -8,11 +8,14 @@ Opening a `.pdf` gives you two windows:
 - a **text buffer** with the PDF's text, one line per PDF text line, where `hjkl`, `/`,
   `w`, visual mode and jump plugins such as [leap.nvim](https://codeberg.org/andyg/leap.nvim)
   work as usual;
-- a **page pane** showing the rendered page. It follows the cursor, tints the cursor line
-  or the visual selection, and marks the character under the cursor, so you always see
-  where you are on the real page. A thin scrollbar on its right edge shows where the visible
-  part sits in the whole document, with a tick at each page boundary (ticks are left out
-  when pages are too close together to tell apart).
+- a **page pane** showing the rendered page. It frames the lines the text window shows
+  (scrolling the text window scrolls the pane) and greys out the rest of the page, so what
+  is bright is exactly what `/` and leap can reach. It tints the cursor line or the visual
+  selection and marks the character under the cursor, so you always see where you are on
+  the real page. When the text window shows more than fits, the pane follows the cursor
+  instead. A thin scrollbar on its right edge shows where the visible part sits in the
+  whole document, with a tick at each page boundary (ticks are left out when pages are too
+  close together to tell apart).
 
 With leap.nvim, its jump labels also appear on the page pane, over the words they point
 to. pdfview hooks in through leap's `on_beacons` option (any function you set there keeps

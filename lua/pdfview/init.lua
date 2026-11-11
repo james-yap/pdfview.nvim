@@ -256,9 +256,14 @@ local function open_pane(buf, win)
   st.pane = { win = pwin, buf = pbuf }
 end
 
---- Fit-width view of the cursor's page, panned to keep the cursor line in the
---- middle 70% of the pane. Pages shorter than the pane are shown whole.
---- The image is rendered at exactly cols x rows cells of terminal pixels.
+--- First and last buffer lines `win` shows: what leap and / can reach.
+local function window_lines(win) return { vim.fn.line('w0', win), vim.fn.line('w$', win) } end
+
+--- Fit-width view of the cursor's page, panned to centre the lines the text
+--- window shows; when they are taller than the pane, panned to keep the cursor
+--- line in the middle 70% of the pane. Pages shorter than the pane are shown
+--- whole. The image is rendered at exactly cols x rows cells of terminal pixels.
+--- `lit` is the text window's line range, kept bright on the page.
 local function view_for(buf, win)
   local st = states[buf]
   local info = st.info[api.nvim_win_get_cursor(win)[1]]
@@ -269,18 +274,31 @@ local function view_for(buf, win)
   local rows = math.min(api.nvim_win_get_height(st.pane.win), kitty.max_cells)
   local px_w = cols * cell.width
   local h = pw * rows * cell.height / px_w -- page points visible at fit-width
+  local lit = window_lines(win)
   if h >= ph then
     local img_rows = math.max(1, math.ceil(ph * px_w / pw / cell.height))
-    return { page = page, clip = { 0, 0, pw, ph }, width = math.floor(px_w), cols = cols, rows = img_rows }
+    return { page = page, clip = { 0, 0, pw, ph }, width = math.floor(px_w), cols = cols, rows = img_rows, lit = lit }
   end
-  local cy, v = info[4] and 0 or (info[2] + info[3]) / 2, st.view
+  local top, bottom
+  for lnum = lit[1], lit[2] do
+    local l = st.info[lnum]
+    if l[1] == page and not l[4] then
+      top, bottom = math.min(top or l[2], l[2]), math.max(bottom or l[3], l[3])
+    end
+  end
   local y0
-  if v and v.page == page and v.h == h and cy >= v.y0 + h * 0.15 and cy <= v.y0 + h * 0.85 then
-    y0 = v.y0
+  if top and bottom - top <= h then
+    y0 = (top + bottom - h) / 2
   else
-    y0 = math.max(0, math.min(ph - h, cy - h * 0.4))
+    local cy, v = info[4] and 0 or (info[2] + info[3]) / 2, st.view
+    if v and v.page == page and v.h == h and cy >= v.y0 + h * 0.15 and cy <= v.y0 + h * 0.85 then
+      y0 = v.y0
+    else
+      y0 = cy - h * 0.4
+    end
   end
-  return { page = page, y0 = y0, h = h, clip = { 0, y0, pw, y0 + h }, width = math.floor(px_w), cols = cols, rows = rows }
+  y0 = math.max(0, math.min(ph - h, y0))
+  return { page = page, y0 = y0, h = h, clip = { 0, y0, pw, y0 + h }, width = math.floor(px_w), cols = cols, rows = rows, lit = lit }
 end
 
 --- The selection (visual mode in `win`) or else the cursor line, plus the character under the cursor.
@@ -334,13 +352,13 @@ local function render(buf, win)
   end
   local view = view_for(buf, win)
   local marks = marks_for(buf, win, view.page)
-  local key = vim.json.encode { view.page, view.clip, view.width, view.rows, marks, st.version }
+  local key = vim.json.encode { view.page, view.clip, view.width, view.rows, view.lit, marks, st.version }
   if key == st.render_key then return end
   st.view, st.render_key, st.busy = view, key, true
   render_id = render_id + 1
   -- kitty and Ghostty only accept temporary files named like this, in $TMPDIR.
   local png = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-%d.png'):format(vim.fn.getpid(), render_id))
-  local params = { key = buf, page = view.page, clip = view.clip, width = view.width, marks = marks, scrollbar = true, out = png }
+  local params = { key = buf, page = view.page, clip = view.clip, width = view.width, marks = marks, lit = view.lit, scrollbar = true, out = png }
   request('render', params, function(err)
     st.busy = false
     if err then
@@ -749,6 +767,16 @@ function M.setup(opts)
           api.nvim_win_set_width(st.pane.win, pane_columns(total))
         end
         if win then render(buf, win) end
+      end
+    end,
+  })
+  -- The pane frames the text window's lines, so scrolling without moving the cursor moves it too.
+  api.nvim_create_autocmd('WinScrolled', {
+    group = GROUP,
+    callback = function()
+      for id in pairs(vim.v.event) do
+        local win = tonumber(id)
+        if win and api.nvim_win_is_valid(win) and states[api.nvim_win_get_buf(win)] then render(api.nvim_win_get_buf(win), win) end
       end
     end,
   })
