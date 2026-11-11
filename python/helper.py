@@ -10,14 +10,26 @@ Response: {"id": n, "result": ...} or {"id": n, "error": str}
 Buffer lines are owned here: `open` returns them, and every later request
 addresses text by 1-based buffer line number plus 0-based, inclusive
 character indices into that line (Lua converts its byte columns).
+
+Annotation edits are undoable by the caller: `open`, `annotate`, `set_contents`,
+`delete` and `save` return `state`, an opaque one-line string naming the
+annotations the document now holds. `restore` {key, state} puts any state
+string of the same `open` back (older, newer or from another branch) and
+returns {state, annots} with every annotation of the document.
 """
 
+import base64
+import contextlib
+import functools
 import html
 import json
 import os
 import sys
 import tempfile
 import traceback
+import uuid
+import zlib
+from typing import NamedTuple
 
 import pymupdf
 
@@ -35,6 +47,116 @@ CREATE = {
     "underline": ("add_underline_annot", (0.86, 0.15, 0.15)),
     "strikeout": ("add_strikeout_annot", (0.86, 0.15, 0.15)),
 }
+
+STATE_PREFIX = "pdfview-annots:1:"
+PDF_WS = " \t\r\n\f\0"
+PDF_DELIMS = "()<>[]{}/%"
+
+
+class Cap(NamedTuple):
+    """One PDF object as read: its source text and raw (still filtered) stream."""
+
+    src: str
+    stream: bytes | None
+
+
+class ObjInfo(NamedTuple):
+    type: str | None
+    subtype: str | None
+    follow: tuple  # xrefs an annotation state must carry along with this object
+
+    @property
+    def opaque(self):
+        # Owners of annotations, never state of their own: restoring one
+        # would rewind unrelated page, link or form content.
+        return self.type in ("Page", "Pages", "Catalog") or self.subtype in ("Link", "Widget")
+
+
+def pdf_tokens(src):
+    """(kind, value) tokens of a PDF object's source: "<<", ">>", "[", "]",
+    ("name", text), ("word", text) for numbers and keywords, ("str", raw text)."""
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c in PDF_WS or c in "{})":
+            i += 1
+        elif c == "%":
+            while i < n and src[i] not in "\r\n":
+                i += 1
+        elif c == "(":
+            start, depth, i = i, 1, i + 1
+            while i < n and depth:
+                if src[i] == "\\":
+                    i += 1
+                elif src[i] == "(":
+                    depth += 1
+                elif src[i] == ")":
+                    depth -= 1
+                i += 1
+            yield "str", src[start:i]
+        elif src.startswith("<<", i):
+            yield "<<", None
+            i += 2
+        elif src.startswith(">>", i):
+            yield ">>", None
+            i += 2
+        elif c == "<":
+            end = src.find(">", i)
+            end = n if end < 0 else end + 1
+            yield "str", src[i:end]
+            i = end
+        elif c in "[]":
+            yield c, None
+            i += 1
+        elif c == ">":
+            i += 1
+        else:
+            j = i + 1
+            while j < n and src[j] not in PDF_WS and src[j] not in PDF_DELIMS:
+                j += 1
+            yield ("name", src[i + 1 : j]) if c == "/" else ("word", src[i:j])
+            i = j
+
+
+@functools.lru_cache(maxsize=4096)
+def parse_object(src):
+    """Type, Subtype and referenced xrefs. Owner objects are excluded by their
+    types during capture, not by dictionary keys: font glyphs can be named /P."""
+    toks = list(pdf_tokens(src))
+    stack, refs = [], []
+    type_ = subtype = None
+    for i, (kind, value) in enumerate(toks):
+        if kind in ("<<", "["):
+            stack.append(kind)
+        elif kind in (">>", "]"):
+            if stack:
+                stack.pop()
+        elif kind == "name" and stack == ["<<"] and i and toks[i - 1][0] == "name":
+            if toks[i - 1][1] == "Type":
+                type_ = value
+            elif toks[i - 1][1] == "Subtype":
+                subtype = value
+        elif kind == "word" and value == "R" and i >= 2 and toks[i - 1][0] == toks[i - 2][0] == "word":
+            if toks[i - 2][1].isdigit():
+                refs.append(int(toks[i - 2][1]))
+    follow = []
+    for xref in refs:
+        if xref in follow:
+            continue
+        follow.append(xref)
+    return ObjInfo(type_, subtype, tuple(follow))
+
+
+def same_source(a, b):
+    """Whether two sources of one object differ at most in whitespace. For
+    /Annots arrays None (no key) equals an empty array."""
+    a, b = a or "[]", b or "[]"
+    return a == b or list(pdf_tokens(a)) == list(pdf_tokens(b))
+
+
+def array_refs(src):
+    return parse_object(src or "[]").follow
+
 
 docs = {}
 
@@ -66,6 +188,14 @@ class Doc:
                     self.boxes.append([pymupdf.Rect(c["bbox"]) for c in chars])
                     lnums.append(len(self.lines))
             self.page_lines.append(lnums)
+        self.nonce = uuid.uuid4().hex  # states only restore into the document session that made them
+        self.open_len = self.doc.xref_length()  # object numbers from here on are ours
+        self.base = {}  # xref -> Cap | None: content when first seen (None: did not exist)
+        self.live = {}  # xref -> Cap | None: content now
+        self.encodings = {}  # xref -> (saved encoding, logical Cap before save)
+        self.opaque = set()  # xrefs never captured: pages and other owners of annotations
+        self.base_pages = {}  # pno -> /Annots source when the page was first edited
+        self.live_pages = {}
 
     def header(self, pno):
         return next(i + 1 for i, info in enumerate(self.info) if info[0] == pno and info[3])
@@ -131,6 +261,186 @@ class Doc:
         if annot is None:
             raise ValueError("annotation %d not found on page %d" % (xref, pno + 1))
         return page, annot
+
+    # ---- Annotation state -------------------------------------------------
+    # Every annotation edit is also a set of raw PDF object changes. The
+    # document keeps, per object it has seen, the original content (`base`) and
+    # the content currently in `self.doc` (`live`), plus the /Annots array of
+    # every page it touched. A state string is the delta of `live` against
+    # `base` restricted to what the page arrays still reach: self-contained,
+    # canonical (the same logical state always encodes identically) and
+    # proportional to the annotations changed since open, not to the PDF.
+    # `restore` rewrites only the objects where live and target differ.
+    # Objects are never freed: MuPDF's own annotation delete only unlinks, so
+    # an undone deletion brings back the very same objects, appearance
+    # streams, popups and replies included.
+
+    def read_object(self, xref):
+        """Current Cap (source and raw stream) of `xref`, None if absent or freed."""
+        doc = self.doc
+        if not 1 <= xref < doc.xref_length():
+            return None
+        try:
+            src = doc.xref_object(xref)
+        except ValueError:
+            return None
+        if src.strip() == "null":
+            return None
+        cap = Cap(src, doc.xref_stream_raw(xref) if doc.xref_is_stream(xref) else None)
+        encoded = self.encodings.get(xref)
+        return encoded[1] if encoded and cap == encoded[0] else cap
+
+    def read_annots(self, pno):
+        """Source of the page's /Annots array, None when it has no such key."""
+        kind, value = self.doc.xref_get_key(self.doc.page_xref(pno), "Annots")
+        if kind == "xref":
+            return self.doc.xref_object(int(value.split()[0]))
+        return value if kind == "array" else None
+
+    def write_annots(self, pno, source):
+        page_xref = self.doc.page_xref(pno)
+        kind, value = self.doc.xref_get_key(page_xref, "Annots")
+        if source is None:
+            # xref_set_key(..., "null") would leave /Annots null behind.
+            pdf = pymupdf._as_pdf_document(self.doc)
+            pymupdf.mupdf.pdf_dict_dels(pymupdf.mupdf.pdf_load_object(pdf, page_xref), "Annots")
+        elif kind == "xref":
+            self.doc.update_object(int(value.split()[0]), source)
+        else:
+            self.doc.xref_set_key(page_xref, "Annots", source)
+
+    def write_object(self, xref, cap):
+        doc = self.doc
+        self.encodings.pop(xref, None)
+        while doc.xref_length() <= xref:  # slot lost to a full rewrite
+            doc.get_new_xref()
+        doc.update_object(xref, cap.src)
+        if cap.stream is not None:
+            # update_stream() would drop /Filter; this keeps the raw bytes as stored.
+            pdf = pymupdf._as_pdf_document(doc)
+            buf = pymupdf.JM_BufferFromBytes(cap.stream)
+            pymupdf.mupdf.pdf_update_stream(pdf, pymupdf.mupdf.pdf_new_indirect(pdf, xref, 0), buf, 1)
+
+    def capture(self, roots):
+        """Record what `roots` and everything they own or reference now hold."""
+        todo, seen = list(roots), set()
+        while todo:
+            xref = todo.pop()
+            if xref in seen or xref in self.opaque:
+                continue
+            seen.add(xref)
+            cap = self.read_object(xref)
+            info = parse_object(cap.src) if cap else None
+            if info and info.opaque:
+                self.opaque.add(xref)
+                continue
+            # Objects that predate the edit and were never seen are assumed
+            # untouched by it; objects past the original table are new.
+            self.base.setdefault(xref, None if xref >= self.open_len else cap)
+            self.live[xref] = cap
+            if info:
+                todo.extend(info.follow)
+
+    def ensure_page(self, pno):
+        """Baseline a page before its first edit."""
+        if pno not in self.base_pages:
+            source = self.read_annots(pno)
+            self.base_pages[pno] = self.live_pages[pno] = source
+            self.capture(array_refs(source))
+
+    @contextlib.contextmanager
+    def edit(self, pno, targets=()):
+        """Run a mutation of page `pno`, then record every object it changed:
+        `targets` plus whatever entered or left the page's /Annots array."""
+        self.ensure_page(pno)
+        before = set(array_refs(self.live_pages[pno]))
+        try:
+            yield
+        finally:
+            self.live_pages[pno] = source = self.read_annots(pno)
+            after = set(array_refs(source))
+            self.capture(set(targets) | before ^ after)
+
+    def refresh(self, after_save=False):
+        """Track dropped objects after reopening. A save can re-encode surviving
+        streams without an annotation edit; remember their previous identity so
+        later captures do not turn that compression into an undo entry."""
+        if after_save:
+            self.encodings.clear()
+        for xref, previous in self.live.items():
+            current = self.read_object(xref)
+            if after_save and previous is not None and current is not None:
+                if current != previous:
+                    self.encodings[xref] = (current, previous)
+            else:
+                self.live[xref] = current
+        if not after_save:
+            for pno in self.live_pages:
+                self.live_pages[pno] = self.read_annots(pno)
+
+    def state(self):
+        pages = {
+            str(pno): src for pno, src in self.live_pages.items() if not same_source(src, self.base_pages[pno])
+        }
+        objs = {}
+        todo, seen = [x for src in self.live_pages.values() for x in array_refs(src)], set()
+        while todo:
+            xref = todo.pop()
+            cap = self.live.get(xref)
+            if xref in seen or cap is None:
+                continue
+            seen.add(xref)
+            if cap != self.base.get(xref):
+                stream = None if cap.stream is None else base64.b64encode(cap.stream).decode("ascii")
+                objs[str(xref)] = [cap.src, stream]
+            todo.extend(parse_object(cap.src).follow)
+        payload = {"doc": self.nonce, "pages": pages, "objs": objs}
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return STATE_PREFIX + base64.b64encode(zlib.compress(raw, 9)).decode("ascii")
+
+    def decode_state(self, state):
+        """(pages {pno: array source}, objs {xref: Cap}) of a state string."""
+        try:
+            if not state.startswith(STATE_PREFIX):
+                raise ValueError
+            payload = json.loads(zlib.decompress(base64.b64decode(state[len(STATE_PREFIX) :], validate=True)))
+            pages = {int(pno): src for pno, src in payload["pages"].items()}
+            objs = {
+                int(xref): Cap(src, None if stream is None else base64.b64decode(stream))
+                for xref, (src, stream) in payload["objs"].items()
+            }
+            nonce = payload["doc"]
+        except (ValueError, KeyError, TypeError, AttributeError, zlib.error):
+            raise ValueError("not an annotation state") from None
+        if nonce != self.nonce:
+            raise ValueError("annotation state belongs to another document session")
+        if any(not 0 <= pno < len(self.doc) for pno in pages):
+            raise ValueError("annotation state names a page this document lacks")
+        return pages, objs
+
+    def restore(self, state):
+        """Make `self.doc` hold exactly the annotations of `state`."""
+        pages, objs = self.decode_state(state)
+        for pno in pages:
+            self.ensure_page(pno)
+        try:
+            # An object the target does not list is back at its original content.
+            for xref in set(self.live) | set(objs):
+                cap = objs[xref] if xref in objs else self.base.get(xref)
+                if cap is not None and self.live.get(xref) != cap:
+                    self.write_object(xref, cap)
+                    self.live[xref] = cap
+            for pno in list(self.live_pages):
+                source = pages.get(pno, self.base_pages[pno])
+                if not same_source(self.live_pages[pno], source):
+                    self.write_annots(pno, source)
+                    self.live_pages[pno] = source
+        except BaseException:
+            self.refresh()
+            raise
+
+    def all_annots(self):
+        return [a for pno in range(len(self.doc)) for a in self.annots(pno)]
 
 
 def tint(pix, rect, matrix, color, outline=False):
@@ -242,7 +552,8 @@ def m_open(p):
         "lines": d.lines,
         "info": d.info,
         "pages": [[page.rect.width, page.rect.height] for page in d.doc],
-        "annots": [a for pno in range(len(d.doc)) for a in d.annots(pno)],
+        "annots": d.all_annots(),
+        "state": d.state(),
     }
 
 
@@ -266,28 +577,40 @@ def m_annotate(p):
     pno = d.ranges_page(p["ranges"])
     method, color = CREATE[p["kind"]]
     quads = [d.range_rect(*r).quad for r in p["ranges"]]
-    page = d.doc[pno]
-    annot = getattr(page, method)(quads=quads)
-    annot.set_colors(stroke=color)
-    if p.get("contents"):
-        annot.set_info(content=p["contents"])
-    annot.update()
-    return {"page": pno, "xref": annot.xref, "annots": d.annots(pno)}
+    with d.edit(pno):
+        page = d.doc[pno]
+        annot = getattr(page, method)(quads=quads)
+        annot.set_colors(stroke=color)
+        if p.get("contents"):
+            annot.set_info(content=p["contents"])
+        annot.update()
+        xref = annot.xref
+    return {"page": pno, "xref": xref, "annots": d.annots(pno), "state": d.state()}
 
 
 def m_set_contents(p):
     d = docs[p["key"]]
     _page, annot = d.load_annot(p["page"], p["xref"])
-    annot.set_info(content=p["contents"])
-    annot.update()
-    return {"page": p["page"], "annots": d.annots(p["page"])}
+    if annot.info.get("content", "") != p["contents"]:  # no change, no new state
+        with d.edit(p["page"], [p["xref"]]):
+            annot.set_info(content=p["contents"])
+            annot.update()
+    return {"page": p["page"], "annots": d.annots(p["page"]), "state": d.state()}
 
 
 def m_delete(p):
     d = docs[p["key"]]
     page, annot = d.load_annot(p["page"], p["xref"])
-    page.delete_annot(annot)
-    return {"page": p["page"], "annots": d.annots(p["page"])}
+    with d.edit(p["page"], [p["xref"]]):
+        page.delete_annot(annot)
+    return {"page": p["page"], "annots": d.annots(p["page"]), "state": d.state()}
+
+
+def m_restore(p):
+    """Put the document back into an annotation state returned earlier by this session."""
+    d = docs[p["key"]]
+    d.restore(p["state"])
+    return {"state": p["state"], "annots": d.all_annots()}
 
 
 def m_save(p):
@@ -295,23 +618,27 @@ def m_save(p):
     target = p.get("path") or d.path
     if target != d.path:
         d.doc.save(target, garbage=1, deflate=True)
-        return {}
+        return {"state": d.state()}
     if d.doc.can_save_incrementally():
         d.doc.save(d.path, incremental=True, encryption=pymupdf.PDF_ENCRYPT_KEEP)
-        return {}
-    # Repaired or otherwise non-incremental documents: full rewrite, then
-    # reopen so later lazy object reads hit the new file.
-    fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(d.path))
-    os.close(fd)
-    try:
-        d.doc.save(tmp, garbage=1, deflate=True)
-        os.replace(tmp, d.path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+    else:
+        # Repaired or otherwise non-incremental documents: full rewrite.
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(d.path))
+        os.close(fd)
+        try:
+            d.doc.save(tmp, garbage=1, deflate=True)
+            os.replace(tmp, d.path)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    # Reopen either way: later lazy object reads must hit the new file, and
+    # MuPDF chains a second incremental update from the same open document
+    # into a corrupt file. The rewrite also dropped unreferenced objects, so
+    # re-read what the states track; `restore` revives what is gone.
     d.doc.close()
     d.doc = pymupdf.open(d.path)
-    return {}
+    d.refresh(after_save=True)
+    return {"state": d.state()}
 
 
 def m_snapshot(p):
@@ -401,6 +728,7 @@ METHODS = {
     "annotate": m_annotate,
     "set_contents": m_set_contents,
     "delete": m_delete,
+    "restore": m_restore,
     "save": m_save,
     "snapshot": m_snapshot,
     "char_boxes": m_char_boxes,

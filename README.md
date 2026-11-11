@@ -65,7 +65,10 @@ Defaults:
 ```lua
 require('pdfview').setup {
   -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
-  keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil },
+  keys = {
+    prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil,
+    hover = 'K', undo = 'u', redo = '<C-r>',
+  },
   -- leap = nil: use keys mapped to <Plug>(leap); a string sets a key; false disables it.
   -- 'page': full-window rendered pages with hidden text. 'split': text + page pane.
   view = 'page',
@@ -93,9 +96,17 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `<leader>pn` | n | Edit the note of the annotation under the cursor |
 | `<leader>pd` | n | Delete the annotation under the cursor |
 | `<leader>pl` | n | List all annotations in the quickfix list |
+| `K` | n | Preview the note under the cursor; press again to focus the preview |
+| `u` / `<C-r>` | n | Undo / redo annotation changes (takes a count) |
 | `]a` / `[a` | n | Next / previous annotation (takes a count) |
 
-Notes open in a small floating window: `:w` saves, `q` saves and closes.
+`K` uses Neovim's hover-style Markdown preview, without requiring an LSP server.
+Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q` or
+`<Esc>` to close. Viewing a note never marks the PDF modified.
+
+`<leader>pn` opens the editable note window: `:w` saves the note into the in-memory
+PDF, and `q` saves and closes. Text editing inside this window uses its own normal
+Neovim undo history.
 
 In full-window page mode these keys operate on the rendered view (in normal and visual
 mode); in split mode they retain their native text-window behaviour:
@@ -124,6 +135,24 @@ The PDF buffer behaves like a file you edit:
   `:w other.pdf` writes a copy.
 - `:e!` reloads the PDF from disk and discards unsaved annotations; `:e` refuses while there
   are unsaved changes.
+- `u` / `<C-r>` undo and redo annotation creation, deletion and note saves. History
+  uses Neovim's native undo tree in a separate hidden annotation-state buffer, so the
+  extracted text and ordinary PDF navigation remain unchanged.
+- `:w` preserves that history. Undoing away from the saved state marks the PDF
+  modified again; returning to it clears the modified flag. Reloading starts fresh.
+- History is session-only: there is no on-disk annotation autosave or crash recovery.
+
+Statuslines must include `%m` to show the usual `[+]` for unsaved changes. In page
+mode the visible PDF window is technically inactive because a hidden float holds
+keyboard focus. If using `mini.statusline`, include `%m` in its inactive content:
+
+```lua
+require('mini.statusline').setup {
+  content = {
+    inactive = function() return '%#MiniStatuslineInactive#%F%m%=' end,
+  },
+}
+```
 
 Highlights, underlines, strikethroughs, squiggly underlines and text notes made by other
 programs are shown, listed, and can be edited or deleted as well.
@@ -186,7 +215,10 @@ uv run --with 'pymupdf>=1.26,<1.27' tests/test_helper.py
 ```
 
 This checks continuous page composition, clipping, hit testing, snapshots, hollow
-cursors and headless Neovim interactions. To include the Leap regression (jumping
+cursors, note previews, native annotation undo/redo, modified-state transitions
+and lossless annotation restoration through saves (including repaired PDFs).
+The headless Neovim checks use the real helper, replacing only terminal graphics.
+To include the Leap regression (jumping
 to visible page text outside the hidden text viewport), set `PDFVIEW_LEAP_RTP` to
 your installed `leap.nvim` directory when running the command.
 

@@ -31,7 +31,7 @@ M.config = {
   -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
   -- leap: keys that run pdfview's leap (targets everything the page view shows).
   -- nil: whatever you mapped to <Plug>(leap), in the same modes.
-  keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil },
+  keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil, hover = 'K', undo = 'u', redo = '<C-r>' },
   -- 'page': the pages fill the PDF's window and the text is hidden; 'split': the
   -- text window plus a page pane to its right. <prefix>t toggles per buffer.
   view = 'page',
@@ -891,35 +891,132 @@ end
 
 -- Annotation actions ---------------------------------------------------------
 
-local function apply(buf, res)
-  local st = states[buf]
-  st.annots = vim.tbl_filter(function(a) return a.page ~= res.page end, st.annots)
-  vim.list_extend(st.annots, res.annots)
-  st.version = st.version + 1
-  vim.bo[buf].modified = true
-  decorate(buf)
-  render(buf, api.nvim_get_current_win())
+--- Only annotation state goes into this buffer; PDF text remains a motion index.
+--- Neovim owns the undo tree, including counts and branches. Nothing is written
+--- to disk for history, and reloading the PDF starts a fresh tree.
+local function reset_history(st, buf, state)
+  if st.history and api.nvim_buf_is_valid(st.history) then api.nvim_buf_delete(st.history, { force = true }) end
+  local history = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_name(history, ('pdfview-history://%d'):format(buf))
+  vim.bo[history].bufhidden = 'hide'
+  vim.bo[history].swapfile = false
+  vim.bo[history].undofile = false
+  api.nvim_buf_call(history, function()
+    vim.bo.undolevels = -1
+    api.nvim_buf_set_lines(history, 0, -1, false, vim.split(state, '\n', { plain = true }))
+    vim.bo.undolevels = vim.go.undolevels
+  end)
+  vim.bo[history].modified = false
+  st.history, st.history_state, st.saved_state = history, state, state
 end
 
-local function under_cursor(buf)
+local function record_state(st, state)
+  if state == st.history_state then return end
+  api.nvim_buf_call(st.history, function()
+    api.nvim_buf_set_lines(st.history, 0, -1, false, vim.split(state, '\n', { plain = true }))
+    -- Hidden buffers do not cross normal-mode command boundaries themselves.
+    -- Close this undo block explicitly so counts work on the very next undo.
+    vim.bo.undolevels = vim.bo.undolevels
+  end)
+  st.history_state = state
+end
+
+local function apply(buf, res, from_history)
+  local st = states[buf]
+  if res.page == nil then
+    st.annots = res.annots
+  else
+    st.annots = vim.tbl_filter(function(a) return a.page ~= res.page end, st.annots)
+    vim.list_extend(st.annots, res.annots)
+  end
+  if not from_history then record_state(st, res.state) end
+  st.history_state = res.state
+  vim.bo[buf].modified = res.state ~= st.saved_state
+  vim.bo[st.history].modified = vim.bo[buf].modified
+  st.version = st.version + 1
+  decorate(buf)
+  render(buf, cursor_window(buf))
+  vim.cmd.redrawstatus()
+end
+
+local function undo_annotations(buf, redo, count)
+  local st = states[buf]
+  local moved
+  local seq = api.nvim_buf_call(st.history, function()
+    local before = vim.fn.undotree().seq_cur
+    vim.cmd('silent normal! ' .. count .. (redo and vim.keycode '<C-r>' or 'u'))
+    moved = vim.fn.undotree().seq_cur ~= before
+    return before
+  end)
+  if not moved then return notify(redo and 'Already at newest annotation change' or 'Already at oldest annotation change') end
+  local state = table.concat(api.nvim_buf_get_lines(st.history, 0, -1, false), '\n')
+  if state == st.history_state then return end
+  local res = try_call('restore', { key = buf, state = state })
+  if not res then
+    -- A failed restore must not move just the shadow buffer's history pointer.
+    api.nvim_buf_call(st.history, function() vim.cmd('silent undo ' .. seq) end)
+    return
+  end
+  apply(buf, res, true)
+end
+
+local function under_cursor(buf, notes_only)
   local st = states[buf]
   local lnum, col = unpack(api.nvim_win_get_cursor(0))
   local ci = char_index(st.lines[lnum], col)
   local best, best_len
   for _, a in ipairs(st.annots) do
-    if #a.ranges == 0 then
-      if a.anchor[1] == lnum and not best then
-        best, best_len = a, math.huge
-      end
-    else
-      for _, r in ipairs(a.ranges) do
-        if r[1] == lnum and ci >= r[2] and ci <= r[3] and (not best_len or r[3] - r[2] < best_len) then
-          best, best_len = a, r[3] - r[2]
+    if not notes_only or a.contents:find('%S') then
+      if #a.ranges == 0 then
+        if a.anchor[1] == lnum and not best then
+          best, best_len = a, math.huge
+        end
+      else
+        for _, r in ipairs(a.ranges) do
+          if r[1] == lnum and ci >= r[2] and ci <= r[3] and (not best_len or r[3] - r[2] < best_len) then
+            best, best_len = a, r[3] - r[2]
+          end
         end
       end
     end
   end
   return best
+end
+
+--- Native hover UI, with PDF note text instead of an LSP response.
+local function hover_note(buf)
+  local a = under_cursor(buf, true)
+  if not a then return notify('No note under the cursor') end
+  local st = states[buf]
+  local view = st.view
+  local nbuf, win = vim.lsp.util.open_floating_preview(vim.split(a.contents, '\n', { plain = true }), 'markdown', {
+    focus_id = 'pdfview.note',
+    border = 'rounded',
+    title = ' ' .. a.type .. ' note ',
+    max_width = math.max(1, math.min(70, view and view.cols - 4 or vim.o.columns - 4)),
+    max_height = math.max(1, math.min(20, view and math.floor(view.rows / 2) or vim.o.lines - 4)),
+  })
+  -- The hidden text cursor does not line up with the rendered glyph. Anchor the
+  -- hover to that glyph on the page instead, keeping the whole float in view.
+  if covered(st) and pane_valid(st) and view then
+    local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+    if not st.info[lnum][4] then
+      local boxes = try_call('char_boxes', { key = buf, chars = { { lnum, char_index(st.lines[lnum], col) } } })
+      if boxes then
+        local box = boxes[1]
+        local row, column = cell_at(st, st.info[lnum][1], box[1], box[4])
+        if row then
+          local width, height = api.nvim_win_get_width(win), api.nvim_win_get_height(win)
+          row = row + height + 3 <= view.rows and row + 1 or math.max(0, row - height - 2)
+          column = math.max(0, math.min(column, view.cols - width - 2))
+          api.nvim_win_set_config(win, { relative = 'win', win = st.pane.win, row = row, col = column, anchor = 'NW' })
+        end
+      end
+    end
+  end
+  for _, key in ipairs { 'q', '<Esc>' } do
+    vim.keymap.set('n', key, function() api.nvim_win_close(win, true) end, { buffer = nbuf, desc = 'Close PDF note preview' })
+  end
 end
 
 local note_id = 0
@@ -931,7 +1028,11 @@ local function edit_note(buf, annot)
   vim.bo[nbuf].buftype = 'acwrite'
   vim.bo[nbuf].bufhidden = 'wipe'
   vim.bo[nbuf].filetype = 'markdown'
-  api.nvim_buf_set_lines(nbuf, 0, -1, false, vim.split(annot.contents, '\n', { plain = true }))
+  api.nvim_buf_call(nbuf, function()
+    vim.bo.undolevels = -1
+    api.nvim_buf_set_lines(nbuf, 0, -1, false, vim.split(annot.contents, '\n', { plain = true }))
+    vim.bo.undolevels = vim.go.undolevels
+  end)
   vim.bo[nbuf].modified = false
   local win = api.nvim_open_win(nbuf, true, {
     relative = 'cursor',
@@ -1071,6 +1172,7 @@ local function unload(buf)
   if st.poll then st.poll:close() end
   uncover(st)
   close_pane(st)
+  if st.history and api.nvim_buf_is_valid(st.history) then api.nvim_buf_delete(st.history, { force = true }) end
   if helper.proc then request('close', { key = buf }, function() end) end
 end
 
@@ -1107,7 +1209,10 @@ local function write(buf, target)
   end
   call('save', { key = buf })
   st.stat = stat_key(st.path)
+  st.saved_state = st.history_state
+  vim.bo[st.history].modified = false
   vim.bo[buf].modified = false
+  vim.cmd.redrawstatus()
 end
 
 local function setup_buffer(buf)
@@ -1155,6 +1260,9 @@ local function setup_buffer(buf)
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')
   map('n', prefixed 't', function() toggle(buf) end, 'toggle page view / text with page pane')
+  map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
+  map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
+  map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
   map('n', keys.next_annotation, function() jump(buf, 1, vim.v.count1) end, 'next annotation')
   map('n', keys.prev_annotation, function() jump(buf, -1, vim.v.count1) end, 'previous annotation')
 
@@ -1203,6 +1311,7 @@ load = function(buf)
   local st = states[buf] or {}
   states[buf] = st
   st.path, st.lines, st.info, st.pages, st.annots = path, res.lines, res.info, res.pages, res.annots
+  reset_history(st, buf, res.state)
   st.stat, st.warned, st.version = stat_key(path), nil, (st.version or 0) + 1
   st.mode, st.layout, st.headers = st.mode or M.config.view, nil, {}
   for lnum, info in ipairs(st.info) do
