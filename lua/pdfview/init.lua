@@ -753,8 +753,19 @@ function M.setup(opts)
     end,
   })
   -- leap fires LeapRedraw before drawing each round of labels, and LeapLeave at the end.
+  -- Leap can move the cursor and then keep waiting for keys (autojump to the first
+  -- target, traversal), and CursorMoved only fires once it returns. Render on
+  -- LeapRedraw so the pane follows; it also sets st.view before the labels are mirrored.
   api.nvim_create_autocmd('User', { group = GROUP, pattern = 'LeapEnter', callback = hook_leap })
-  api.nvim_create_autocmd('User', { group = GROUP, pattern = { 'LeapRedraw', 'LeapLeave' }, callback = clear_labels })
+  api.nvim_create_autocmd('User', {
+    group = GROUP,
+    pattern = 'LeapRedraw',
+    callback = function()
+      clear_labels()
+      render(api.nvim_get_current_buf(), api.nvim_get_current_win())
+    end,
+  })
+  api.nvim_create_autocmd('User', { group = GROUP, pattern = 'LeapLeave', callback = clear_labels })
   -- Free image data held by the terminal.
   api.nvim_create_autocmd('VimLeavePre', {
     group = GROUP,
