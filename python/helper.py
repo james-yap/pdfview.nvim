@@ -174,7 +174,9 @@ def render_view(d, width, height, top, gap, marks):
     """The pages stacked at `width` px wide with `gap` px between them, cut
     from `top` px down `height` px. Marks tint only the page their lines are on."""
     out = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height), False)
-    out.set_rect(out.irect, GAP_COLOR)
+    # set_rect() loops over pixels in Python in PyMuPDF 1.26. The uniform gray
+    # background can instead use clear_with() without a rectangle: a C bulk fill.
+    out.clear_with(GAP_COLOR[0])
     y = 0.0
     for pno, h in enumerate(page_heights(d, width)):
         if y >= top + height:
@@ -203,9 +205,19 @@ def scrollbar(pix, d, top, gap):
     h = pix.height
     width = max(12, pix.width // 60)
     ox = pix.width - width
+    samples, stride = pix.samples_mv, pix.stride
 
     def bar(y0, y1, color, inset=0):
-        pix.set_rect(pymupdf.IRect(ox + inset, y0, ox + width - inset, y1), color)
+        # Both set_rect() and clear_with(bbox) loop over individual samples in
+        # Python in PyMuPDF 1.26. Write whole RGB scanlines instead.
+        rect = pymupdf.IRect(ox + inset, y0, ox + width - inset, y1) & pix.irect
+        if rect.is_empty:
+            return
+        row = bytes(color) * rect.width
+        offset = rect.y0 * stride + rect.x0 * 3
+        for _ in range(rect.height):
+            samples[offset : offset + len(row)] = row
+            offset += stride
 
     bar(0, h, SCROLLBAR["track"])
     # Ticks closer than 3px would merge into a solid band; skip them.

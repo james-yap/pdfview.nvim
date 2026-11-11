@@ -62,6 +62,19 @@ class PageViewTest(unittest.TestCase):
         self.assertEqual(pix.pixel(x, 300 + y), (0, 0, 0))
         self.assertEqual(pix.pixel(x, y), (255, 0, 0))
 
+    def test_scrollbar_bulk_fills_preserve_page_and_track_boundaries(self):
+        pix = helper.render_view(self.d, 400, 120, 570, 10, [])
+        helper.scrollbar(pix, self.d, 570, 10)
+        # Page composition is untouched to the left of the 12px scrollbar.
+        self.assertEqual(pix.pixel(387, 0), (255, 0, 0))
+        self.assertEqual(pix.pixel(387, 119), (0, 0, 255))
+        self.assertEqual(pix.pixel(399, 0), helper.SCROLLBAR["track"])
+        self.assertEqual(pix.pixel(399, 119), helper.SCROLLBAR["track"])
+        # Page 2 starts at 610/2020 of the document; the thumb is inset.
+        self.assertEqual(pix.pixel(388, 36), helper.SCROLLBAR["tick"])
+        self.assertEqual(pix.pixel(390, 36), helper.SCROLLBAR["thumb"])
+        self.assertEqual(pix.pixel(389, 35), helper.SCROLLBAR["track"])
+
     def test_hit_returns_character_index_and_empty_page_has_no_hit(self):
         helper.docs[1] = self.d
         try:

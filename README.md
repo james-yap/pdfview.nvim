@@ -151,7 +151,8 @@ carries what the image cannot show, such as where the page lives on disk and the
 
 - `python/helper.py` (PyMuPDF) extracts the text with each character's position, renders
   page regions, edits annotations and builds snapshots. Neovim talks to one helper process
-  per session over JSON lines.
+  per session over JSON lines. View backgrounds use native bulk fills and the scrollbar
+  uses whole scanline writes, avoiding Python per-pixel loops on navigation updates.
 - In page mode a non-focusable image float covers the normal PDF window. A second,
   hidden float on the text buffer holds focus and inherits the window's jumplist and
   alternate file. Vim handles ordinary text motions and operators; pdfview only maps
