@@ -10,7 +10,9 @@ Opening a `.pdf` gives you two windows:
   work as usual;
 - a **page pane** showing the rendered page. It follows the cursor, tints the cursor line
   or the visual selection, and marks the character under the cursor, so you always see
-  where you are on the real page.
+  where you are on the real page. A thin scrollbar on its right edge shows where the visible
+  part sits in the whole document, with a tick at each page boundary (ticks are left out
+  when pages are too close together to tell apart).
 
 With leap.nvim, its jump labels also appear on the page pane, over the words they point
 to. pdfview hooks in through leap's `on_beacons` option (any function you set there keeps

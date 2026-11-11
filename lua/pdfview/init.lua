@@ -326,7 +326,8 @@ local function render(buf, win)
   render_id = render_id + 1
   -- kitty and Ghostty only accept temporary files named like this, in $TMPDIR.
   local png = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-%d.png'):format(vim.fn.getpid(), render_id))
-  request('render', { key = buf, page = view.page, clip = view.clip, width = view.width, marks = marks, out = png }, function(err)
+  local params = { key = buf, page = view.page, clip = view.clip, width = view.width, marks = marks, scrollbar = true, out = png }
+  request('render', params, function(err)
     st.busy = false
     if err then
       st.render_key = nil

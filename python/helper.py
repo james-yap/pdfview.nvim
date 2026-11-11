@@ -155,6 +155,37 @@ def render_clip(d, pno, clip, width, marks):
     return pix
 
 
+SCROLLBAR = {"track": (232, 232, 232), "tick": (176, 176, 176), "thumb": (110, 110, 110)}
+
+
+def scrollbar(pix, d, pno, clip):
+    """Document-wide scrollbar on the right edge of `pix`: the thumb is the visible
+    part of the whole PDF (pages stacked), with ticks at page boundaries."""
+    clip = pymupdf.Rect(clip)
+    heights = [page.rect.height for page in d.doc]
+    total = sum(heights)
+    h = pix.height
+    width = max(6, pix.width // 160)
+    # A clipped pixmap keeps the clip's pixel origin; set_rect takes those coordinates.
+    ox, oy = pix.x + pix.width - width, pix.y
+
+    def bar(y0, y1, color, inset=0):
+        pix.set_rect(pymupdf.IRect(ox + inset, oy + y0, ox + width - inset, oy + y1), color)
+
+    bar(0, h, SCROLLBAR["track"])
+    # Ticks closer than 3px would merge into a solid band; skip them.
+    if h * min(heights) / total >= 3:
+        top = 0
+        for height in heights[:-1]:
+            top += height
+            y = round(h * top / total)
+            bar(y, y + 1, SCROLLBAR["tick"])
+    start = sum(heights[:pno]) + clip.y0
+    y0 = min(round(h * start / total), h - 4)
+    y1 = min(max(y0 + 4, round(h * (start + clip.height) / total)), h)
+    bar(y0, y1, SCROLLBAR["thumb"], inset=1)
+
+
 def m_open(p):
     d = Doc(p["path"])
     old = docs.pop(p["key"], None)
@@ -176,7 +207,10 @@ def m_close(p):
 
 
 def m_render(p):
-    pix = render_clip(docs[p["key"]], p["page"], p["clip"], p["width"], p.get("marks"))
+    d = docs[p["key"]]
+    pix = render_clip(d, p["page"], p["clip"], p["width"], p.get("marks"))
+    if p.get("scrollbar"):
+        scrollbar(pix, d, p["page"], p["clip"])
     pix.save(p["out"])
     return {"width": pix.width, "height": pix.height}
 
