@@ -740,11 +740,11 @@ RED = (0.9, 0, 0)
 
 
 def cursor_marker(page, char, lw, w, h):
-    """Red box around `char` (image pixels) with diagonal arms about two line
+    """Red box around `char` (image pixels) with diagonal arms about four line
     heights long from its corners, kept inside the w x h image."""
     r = char + (-2 * lw, -2 * lw, 2 * lw, 2 * lw)
     page.draw_rect(r, color=RED, width=lw)
-    arm = 2 * char.height / math.sqrt(2)  # along each axis
+    arm = 4 * char.height / math.sqrt(2)  # along each axis
     for x, y, sx, sy in ((r.x0, r.y0, -1, -1), (r.x1, r.y0, 1, -1), (r.x0, r.y1, -1, 1), (r.x1, r.y1, 1, 1)):
         reach = min(arm, w - x if sx > 0 else x, h - y if sy > 0 else y)
         if reach > 0:
