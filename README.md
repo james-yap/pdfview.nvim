@@ -136,7 +136,6 @@ cursor mode starts where you stopped reading. In pager mode:
 | --- | --- |
 | `j` / `k`, `<Down>` / `<Up>`, `<CR>` | Pan down / up three rows (takes a count) |
 | `d` / `u` | Pan half a view; an explicit count pans that many rows |
-| `f` / `b` | Pan down / up a view with two rows of overlap (takes a count) |
 | `gg` / `G` | Pan to the start / end |
 | `c` | Cursor mode |
 

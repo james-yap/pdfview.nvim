@@ -1336,13 +1336,10 @@ local function setup_buffer(buf)
   page_map('<LeftDrag>', function() end, 'ignore drags on the page', { mouse = true })
   local pager = { pager = true }
   local function half(st) return vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2 end
-  local function screen(st) return (st.top_height - rows(2)) * vim.v.count1 end
   page_map({ 'j', '<Down>', '<CR>' }, function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'pager: pan down', pager)
   page_map({ 'k', '<Up>' }, function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'pager: pan up', pager)
   page_map('d', function(st) scroll_by(buf, half(st)) end, 'pager: pan down half a screen', pager)
   page_map('u', function(st) scroll_by(buf, -half(st)) end, 'pager: pan up half a screen', pager)
-  page_map('f', function(st) scroll_by(buf, screen(st)) end, 'pager: pan down a screen', pager)
-  page_map('b', function(st) scroll_by(buf, -screen(st)) end, 'pager: pan up a screen', pager)
   page_map('gg', function(st) scroll_by(buf, -st.top) end, 'pager: pan to the start', pager)
   page_map('G', function(st) scroll_by(buf, st.layout.total) end, 'pager: pan to the end', pager)
   page_map('c', function() set_pager(buf, false) end, 'pager: cursor mode', pager)
