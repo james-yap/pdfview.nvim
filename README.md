@@ -4,13 +4,16 @@ Read and annotate PDFs in Neovim with ordinary Vim motions, and hand what you ar
 looking at to an AI agent as one captioned image.
 
 Opening a `.pdf` fills its window with the rendered pages, stacked vertically for
-continuous scrolling. The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks,
-visual mode and yanking still operate on real buffer text. The view follows the
-cursor, tints its line or visual selection, and marks the character under the cursor.
-The cursor becomes hollow when you leave the PDF window or the terminal loses focus.
+continuous scrolling, in pager mode: like `less` or Vimium, keys pan the pages and no
+cursor is drawn. Cursor mode (see below) shows the cursor for selecting and annotating.
+The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks, visual mode and yanking
+still operate on real buffer text. In cursor mode the view follows the cursor, tints
+its line or visual selection, and marks the character under the cursor; the cursor
+becomes hollow when you leave the PDF window or the terminal loses focus.
 A document-wide scrollbar at the right edge marks page boundaries (light marks on the
 thumb), and a badge beside its bottom end shows the page in the middle of the view
-and the page count (highlight `PdfViewPage`, linked to `StatusLine`).
+and the page count, after `CURSOR` in cursor mode (highlight `PdfViewPage`, linked to
+`StatusLine`).
 
 To read the extracted text (reading order, what a yank copies), `:split` the PDF
 window: other windows on the buffer show its text as usual.
@@ -85,7 +88,6 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | Key | Mode | Action |
 | --- | --- | --- |
 | `<leader>py` | n, x | Snapshot for an agent (see below) |
-| `<leader>pp` | n | Pager mode (see below) |
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
@@ -105,8 +107,8 @@ Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q`
 PDF, and `q` saves and closes. Text editing inside this window uses its own normal
 Neovim undo history.
 
-These keys operate on the rendered view (in normal and visual mode); in other windows
-on the buffer they keep their native behaviour:
+These keys operate on the rendered view in both modes (in normal and visual mode); in
+other windows on the buffer they keep their native behaviour:
 
 | Key | Action |
 | --- | --- |
@@ -125,23 +127,23 @@ match under the cursor in orange so `n`/`N` stand out in pager mode too.
 Selections and yanks use the extracted text's reading order, not a two-dimensional
 screen rectangle. Use `v` or `V` for selection; mouse dragging is not used.
 
-### Pager mode
+### Pager and cursor mode
 
-`<leader>pp` turns the page view into a pager, like `less` or Vimium: keys pan the
-pages, the cursor is not drawn, and the badge reads `PAGER`. The cursor still follows
-the view, so leaving resumes where you stopped.
+PDFs open in pager mode. The cursor is not drawn but still follows the view, so
+cursor mode starts where you stopped reading. In pager mode:
 
 | Key | Action |
 | --- | --- |
 | `j` / `k`, `<Down>` / `<Up>`, `<CR>` | Pan down / up three rows (takes a count) |
-| `d` / `u`, `<C-d>` / `<C-u>` | Pan half a view; an explicit count pans that many rows |
-| `f` / `b`, `<C-f>` / `<C-b>` | Pan down / up a view with two rows of overlap (takes a count) |
+| `d` / `u` | Pan half a view; an explicit count pans that many rows |
+| `f` / `b` | Pan down / up a view with two rows of overlap (takes a count) |
 | `gg` / `G` | Pan to the start / end |
-| `q` / `<Esc>` | Leave pager mode |
+| `c` | Cursor mode |
 
-Other keys keep working (`]p`, `/`, the mouse wheel, ...). The pager keys stand in
-for the buffer's own mappings of the same keys (such as `u` for annotation undo) until
-you leave.
+`v` / `V` / `<C-v>`, a click on a page and a leap jump also enter cursor mode.
+`<Esc>` in normal mode returns to pager mode (it ends a selection first); your own
+`<Esc>` mapping, such as `:nohlsearch`, still runs. In cursor mode the pager keys do
+what they do in Vim, and `u` undoes annotation changes.
 
 ## Annotations and saving
 
@@ -180,18 +182,20 @@ newer file; `:e!` picks up the new version.
 
 ## Snapshots for agents
 
-`<leader>py` captures the visible regions of the stacked pages (or the cursor's whole
-page when there is no rendered view), with the visual selection tinted, and adds a
-caption strip below it:
+`<leader>py` captures the visible regions of the stacked pages, with the visual
+selection tinted, and adds a caption strip below it:
 
 - the PDF's absolute path,
-- each visible page number and its visible area in PDF points,
-- the selection's bounding box and page,
-- the text of every note visible on those parts of the pages.
+- the visible pages and the page count,
+- the text of every note visible on those parts of the pages,
+- the selected text (up to 300 characters), or in cursor mode without a selection, the
+  cursor's page and the text around it with the character in brackets. The image marks
+  that character with a red box and lines out to the edges.
 
 The result is one PNG, so it works both in a local agent harness (via its path) and in a
 web chat (paste the image). Vision models read the page text from the image; the caption
-carries what the image cannot show, such as where the page lives on disk and the note text.
+carries what the image cannot show, such as where the page lives on disk, the note text
+and the exact text you mean.
 
 ## How it works
 

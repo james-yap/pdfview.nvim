@@ -231,6 +231,8 @@ step('opens the hidden page view over the PDF window', function() end, ready, fu
   assert(not vim.bo[buf].modified)
 end, true)
 
+step('c enters cursor mode for annotating', function() keys 'c' end, function() return ready() and not st().pager end)
+
 step('adds an unrelated modified window with its own statusline', function()
   mark = shows
   plain_buf = api.nvim_create_buf(true, false)

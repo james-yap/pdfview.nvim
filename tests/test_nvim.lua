@@ -57,12 +57,22 @@ local function outline() return not filled() end
 local steps = {}
 local function step(name, action, done, check) steps[#steps + 1] = { name, action, done, check } end
 local leap_shows
-step('open hidden page view', function() end, ready, function()
+local function badge() return api.nvim_buf_get_lines(st().badge.buf, 0, -1, false)[1] end
+local function cursor_drawn()
+  for _, m in ipairs(vim.json.decode(st().render_key)[4]) do
+    if m.color == 0xDDEBFF or m.color == 0x8AB8FF then return true end
+  end
+  return false
+end
+step('open hidden page view in pager mode', function() end, ready, function()
   assert(api.nvim_win_get_config(api.nvim_get_current_win()).hide)
   assert(api.nvim_win_get_width(st().pane.win) == api.nvim_win_get_width(st().host))
+  assert(st().pager and badge() == ' 1/2 ' and not cursor_drawn(), badge())
 end)
+step('c enters cursor mode', function() keys('c') end,
+  function() return ready() and not st().pager and badge() == ' CURSOR 1/2 ' end)
 step('native j moves the invisible text cursor and PDF tint', function() keys('j') end,
-  function() return ready() and cursor()[1] == 2 and filled() end)
+  function() return ready() and cursor()[1] == 2 and filled() and cursor_drawn() end)
 local visual_baseline, visual_cursor
 step('linewise selection paints while an earlier mode callback waits for input', function()
   visual_baseline, visual_cursor = latest_png, cursor()
@@ -97,30 +107,25 @@ step('counted scrolling', function()
   scroll_top = st().top
   keys('3<C-e>')
 end, function() return ready() and st().top == scroll_top + 60 end)
-local function badge() return api.nvim_buf_get_lines(st().badge.buf, 0, -1, false)[1] end
 step('next page shows the second page from its top', function() keys(']p') end,
   function() return ready() and vim.fn.getline('.') == 'second page' end, function()
     assert(st().top == math.floor(st().layout.tops[2]))
-    assert(badge() == ' 2/2 ', badge())
+    assert(badge() == ' CURSOR 2/2 ', badge())
   end)
 step('[p inside a page returns to its top', function() keys('3<C-e>[p') end,
   function() return ready() and st().top == math.floor(st().layout.tops[2]) end,
-  function() assert(badge() == ' 2/2 ', badge()) end)
+  function() assert(badge() == ' CURSOR 2/2 ', badge()) end)
 step('PageUp at a page top goes to the previous page', function() keys('<PageUp>') end,
-  function() return ready() and st().top == 0 end, function() assert(badge() == ' 1/2 ', badge()) end)
-step('pager mode hides the cursor and labels the badge', function() keys(' pp') end,
-  function() return ready() and st().pager and badge() == ' PAGER 1/2 ' end, function()
-    for _, m in ipairs(vim.json.decode(st().render_key)[4]) do
-      assert(m.color ~= 0xDDEBFF and m.color ~= 0x8AB8FF, 'cursor drawn in pager mode')
-    end
-  end)
+  function() return ready() and st().top == 0 end, function() assert(badge() == ' CURSOR 1/2 ', badge()) end)
+step('Esc returns to pager mode', function() keys('<Esc>') end,
+  function() return ready() and st().pager and badge() == ' 1/2 ' and not cursor_drawn() end)
 step('pager j pans three rows', function() keys('j') end, function() return ready() and st().top == 60 end)
 step('pager u pans instead of undoing', function() keys('u') end, function() return ready() and st().top == 0 end)
-step('q leaves pager mode and restores the buffer keys', function() keys('q') end,
-  function() return ready() and not st().pager and badge() == ' 1/2 ' end, function()
-    assert(vim.fn.maparg('u', 'n', false, true).desc == 'PDF: undo annotation change')
-    assert(vim.fn.maparg('j', 'n') == '')
-    assert(filled())
+step('v in pager mode starts a selection in cursor mode', function() keys('v') end,
+  function() return ready() and vim.fn.mode() == 'v' and not st().pager end)
+step('Esc ends the selection and stays in cursor mode', function() keys('<Esc>') end,
+  function() return ready() and vim.fn.mode() == 'n' and not st().pager and filled() end, function()
+    assert(vim.fn.maparg('u', 'n', false, true).desc == 'PDF: pager: pan up half a screen')
   end)
 step('terminal focus lost makes cursor hollow', function() api.nvim_exec_autocmds('FocusLost', {}) end,
   function() return ready() and outline() end)

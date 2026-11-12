@@ -101,6 +101,23 @@ class PageViewTest(unittest.TestCase):
         finally:
             del helper.docs[1]
 
+    def test_snapshot_marks_cursor_with_crosshair_that_leaves_the_character_readable(self):
+        helper.docs[1] = self.d
+        out = str(Path(self.tmp.name) / "snapshot.png")
+        lnum = self.d.page_lines[1][0]
+        box = self.d.boxes[lnum - 1][2] * 4  # page 2 is drawn 4x, from the top of the image
+        cx, cy = int((box.x0 + box.x1) / 2), int((box.y0 + box.y1) / 2)
+        try:
+            helper.m_snapshot({"key": 1, "top": 610, "height": 200, "gap": 10, "width": 400, "ranges": [], "cursor": [lnum, 2], "out": out})
+            pix = pymupdf.Pixmap(out)
+            red = lambda p: p[0] > 150 and p[2] < 100
+            self.assertTrue(red(pix.pixel(1, cy)) and red(pix.pixel(399, cy)), "horizontal line reaches both edges")
+            self.assertTrue(red(pix.pixel(cx, 1)) and red(pix.pixel(cx, 198)), "vertical line reaches both edges")
+            self.assertFalse(red(pix.pixel(cx, cy)), "the character itself is not covered")
+            self.assertEqual(pix.pixel(200, 1), (0, 0, 255))
+        finally:
+            del helper.docs[1]
+
     def test_hollow_cursor_preserves_interior_and_only_tints_border(self):
         pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 30, 20), False)
         pix.clear_with(255)

@@ -405,7 +405,7 @@ end
 --- scrollbar, for the page in the middle of the view.
 local function update_badge(st, view)
   local page = page_at(view.layout, view.top + view.height / 2)
-  local text = (st.pager and ' PAGER %d/%d ' or ' %d/%d '):format(page, #st.pages)
+  local text = (st.pager and ' %d/%d ' or ' CURSOR %d/%d '):format(page, #st.pages)
   local width = #text
   local config = {
     relative = 'win',
@@ -530,6 +530,9 @@ local function render(buf)
     st.again = true
     return
   end
+  -- v, V and <C-v> in pager mode start a selection in cursor mode. Checked here, as
+  -- render also runs from the input hook while another ModeChanged handler waits.
+  if st.pager and api.nvim_get_current_win() == st.focus and api.nvim_get_mode().mode:match '^[vV\22]' then st.pager = false end
   local view = view_for(st)
   update_badge(st, view)
   local marks = marks_for(buf, view)
@@ -576,20 +579,13 @@ local function refresh(buf)
   end)
 end
 
---- Leave pager mode: put back the buffer's own mappings of the pager keys.
---- The caller repaints, if the view is still there.
-local function leave_pager(buf)
+--- Switch the page view between pager mode (`on`: keys pan the pages, the
+--- cursor is not drawn) and cursor mode (vim motions, selections, annotations).
+local function set_pager(buf, on)
   local st = states[buf]
-  local saved = st.pager
-  if not saved then return end
-  st.pager = nil
-  if not api.nvim_buf_is_valid(buf) then return end
-  api.nvim_buf_call(buf, function()
-    for lhs, map in pairs(saved) do
-      pcall(vim.keymap.del, 'n', lhs, { buffer = buf })
-      if map then vim.fn.mapset(map) end
-    end
-  end)
+  if st.pager == on then return end
+  st.pager = on
+  render(buf)
 end
 
 --- A file opened in the hidden float (:e, :bnext, a picker, <C-o>) moves to the
@@ -718,56 +714,6 @@ local function screen_line(buf, where)
   api.nvim_win_set_cursor(st.focus, { best, 0 })
 end
 
--- Pager mode: like less or Vimium, keys pan the pages and the cursor is not
--- drawn (it still follows the view, so leaving resumes there). The pager keys
--- stand in for the buffer's own mappings of the same keys until it ends.
--- <Space> is left alone: it is the usual <leader>, and which-key's buffer-local
--- trigger on it is not there to save while which-key runs <leader>pp.
-
---- { keys, action(st), description } for pager mode in `buf`.
-local function pager_keys(buf)
-  local function rows(n) return n * kitty.cell_size().height end
-  local function step() return rows(3 * vim.v.count1) end
-  local function half(st) return vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2 end
-  local function screen(st) return (st.top_height - rows(2)) * vim.v.count1 end
-  return {
-    { { 'j', '<Down>', '<CR>' }, function() scroll_by(buf, step()) end, 'pan down' },
-    { { 'k', '<Up>' }, function() scroll_by(buf, -step()) end, 'pan up' },
-    { { 'd' }, function(st) scroll_by(buf, half(st)) end, 'pan down half a screen' },
-    { { 'u' }, function(st) scroll_by(buf, -half(st)) end, 'pan up half a screen' },
-    { { 'f' }, function(st) scroll_by(buf, screen(st)) end, 'pan down a screen' },
-    { { 'b' }, function(st) scroll_by(buf, -screen(st)) end, 'pan up a screen' },
-    { { 'gg' }, function(st) scroll_by(buf, -st.top) end, 'pan to the start' },
-    { { 'G' }, function(st) scroll_by(buf, st.layout.total) end, 'pan to the end' },
-    { { 'q', '<Esc>' }, function()
-      leave_pager(buf)
-      render(buf)
-    end, 'leave pager mode' },
-  }
-end
-
-local function enter_pager(buf)
-  local st = states[buf]
-  if st.pager then return end
-  if not (covered(st) and st.top and api.nvim_get_current_win() == st.focus) then
-    return notify('Pager mode works from the page view, not from other windows on the PDF', vim.log.levels.WARN)
-  end
-  st.pager = {}
-  for _, k in ipairs(pager_keys(buf)) do
-    for _, lhs in ipairs(k[1]) do
-      local saved = vim.fn.maparg(lhs, 'n', false, true)
-      st.pager[lhs] = saved.buffer == 1 and saved or false
-      vim.keymap.set('n', lhs, function()
-        if covered(st) and api.nvim_get_current_win() == st.focus then return k[2](st) end
-        -- The page view is gone (another window, :q, ...): end pager mode and do the key's usual thing.
-        local count = vim.v.count > 0 and vim.v.count or ''
-        leave_pager(buf)
-        api.nvim_feedkeys(count .. vim.keycode(lhs), 'm', false)
-      end, { buffer = buf, desc = 'PDF pager: ' .. k[3] })
-    end
-  end
-  render(buf)
-end
 
 --- Move the cursor to the character under a mouse click on the pages.
 --- Returns false when the click was not on the pages.
@@ -787,6 +733,7 @@ local function click(buf)
   if api.nvim_get_current_win() ~= win then api.nvim_set_current_win(win) end
   local lnum = hit and hit[1] or st.headers[i]
   api.nvim_win_set_cursor(win, { lnum, hit and byte_index(st.lines[lnum], hit[2]) or 0 })
+  set_pager(buf, false)
   return true
 end
 
@@ -930,12 +877,16 @@ local function leap_targets(buf, win)
 end
 
 --- leap with the page view's targets from the hidden float; plain leap elsewhere.
+--- A jump on the page view enters cursor mode.
 local function leap_on_page(buf)
   local st = states[buf]
   local win = api.nvim_get_current_win()
   local kwargs = { windows = { win }, inclusive = true }
-  if st and st.view and covered(st) and win == st.focus then kwargs.targets = leap_targets(buf, win) end
+  if not (st and st.view and covered(st) and win == st.focus) then return require('leap').leap(kwargs) end
+  kwargs.targets = leap_targets(buf, win)
+  local before = api.nvim_win_get_cursor(win)
   require('leap').leap(kwargs)
+  if not vim.deep_equal(before, api.nvim_win_get_cursor(win)) then set_pager(buf, false) end
 end
 
 --- Keys mapped to leap's <Plug>(leap), per mode, or M.config.keys.leap in n/x/o.
@@ -1196,8 +1147,9 @@ end
 
 -- Snapshot for agents --------------------------------------------------------
 
---- PNG of the visible stacked pages, plus a caption with per-page clips,
---- selection bounds and note texts.
+--- PNG of the visible stacked pages, plus a caption with the visible pages, note
+--- texts, the selected text, and in cursor mode without a selection the cursor,
+--- which the image marks with a crosshair.
 local function snapshot(buf)
   local st, ranges = states[buf], selection(buf)
   local v = st.view
@@ -1210,8 +1162,19 @@ local function snapshot(buf)
   local dir = M.config.snapshot_dir or vim.fs.joinpath(kitty.tmpdir(), 'pdfview')
   vim.fn.mkdir(dir, 'p')
   local png = vim.fs.joinpath(dir, ('snap-%s-%03d.png'):format(os.date '%Y%m%d-%H%M%S', uv.now() % 1000))
-  local params =
-    { key = buf, width = width, height = height, top = top, gap = gap, ranges = ranges or {}, color = COLORS.selection, out = png }
+  local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+  local cursor = not (ranges or st.pager or st.info[lnum][4]) and { lnum, char_index(st.lines[lnum], col) } or nil
+  local params = {
+    key = buf,
+    width = width,
+    height = height,
+    top = top,
+    gap = gap,
+    ranges = ranges or {},
+    color = COLORS.selection,
+    cursor = cursor,
+    out = png,
+  }
   if not try_call('snapshot', params) then return end
   if vim.fn.has 'mac' ~= 1 then return notify('Saved snapshot ' .. png .. ' (clipboard copy is macOS-only)') end
   local res = vim.system({ 'osascript', '-e', ('set the clipboard to (read (POSIX file "%s") as «class PNGf»)'):format(png) }):wait()
@@ -1224,7 +1187,6 @@ end
 local function unload(buf)
   local st = states[buf]
   if not st then return end
-  leave_pager(buf)
   states[buf] = nil
   if st.poll then st.poll:close() end
   uncover(st)
@@ -1297,9 +1259,14 @@ local function setup_buffer(buf)
   end)
 
   local keys = M.config.keys
+  -- Normal-mode actions by key, for keys that pan in pager mode (u: undo).
+  local own = {}
   local function map(mode, lhs, fn, desc)
     for _, l in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
-      if l then vim.keymap.set(mode, l, fn, { buffer = buf, desc = 'PDF: ' .. desc }) end
+      if l then
+        vim.keymap.set(mode, l, fn, { buffer = buf, desc = 'PDF: ' .. desc })
+        if mode == 'n' then own[l] = fn end
+      end
     end
   end
   local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
@@ -1311,7 +1278,6 @@ local function setup_buffer(buf)
   map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')
-  map('n', prefixed 'p', function() enter_pager(buf) end, 'pager mode: keys pan the pages')
   map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
   map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
   map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
@@ -1325,15 +1291,27 @@ local function setup_buffer(buf)
   end
 
   -- The text window is hidden, so scrolling, page jumps, H/M/L and clicks act on
-  -- the pages. Elsewhere (other windows on the buffer, the mouse over another
-  -- window) the keys do what they always do.
-  local function page_map(lhs, fn, desc, mouse)
+  -- the pages, and in pager mode (`pager` set) more keys pan them. Elsewhere
+  -- (other windows on the buffer, the mouse over another window, cursor mode
+  -- for pager keys) the keys do what they did before: the action mapped above,
+  -- or the native key.
+  local function page_map(lhs, fn, desc, opts)
+    opts = opts or {}
     for _, l in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
-      map({ 'n', 'x' }, l, function()
+      local before = own[l]
+      map(opts.pager and 'n' or { 'n', 'x' }, l, function()
         local st = states[buf]
-        if st and covered(st) and st.top and api.nvim_get_current_win() == st.focus and (not mouse or vim.fn.getmousepos().winid == st.host) then
+        if
+          st
+          and covered(st)
+          and st.top
+          and api.nvim_get_current_win() == st.focus
+          and (not opts.mouse or vim.fn.getmousepos().winid == st.host)
+          and (not opts.pager or st.pager)
+        then
           return fn(st)
         end
+        if before then return before() end
         api.nvim_feedkeys((vim.v.count > 0 and vim.v.count or '') .. vim.keycode(l), 'n', false)
       end, desc)
     end
@@ -1345,8 +1323,8 @@ local function setup_buffer(buf)
   page_map('<C-u>', function(st) scroll_by(buf, -(vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2)) end, 'scroll the page up half a screen')
   page_map('<C-f>', function(st) scroll_by(buf, (st.top_height - rows(2)) * vim.v.count1) end, 'scroll the page down a screen')
   page_map('<C-b>', function(st) scroll_by(buf, -(st.top_height - rows(2)) * vim.v.count1) end, 'scroll the page up a screen')
-  page_map('<ScrollWheelDown>', function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'scroll the page down', true)
-  page_map('<ScrollWheelUp>', function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'scroll the page up', true)
+  page_map('<ScrollWheelDown>', function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'scroll the page down', { mouse = true })
+  page_map('<ScrollWheelUp>', function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'scroll the page up', { mouse = true })
   page_map('zt', function() align(buf, 0) end, 'cursor line to the top of the view')
   page_map('zz', function() align(buf, 0.5) end, 'cursor line to the middle of the view')
   page_map('zb', function() align(buf, 1) end, 'cursor line to the bottom of the view')
@@ -1355,7 +1333,19 @@ local function setup_buffer(buf)
   page_map('L', function() screen_line(buf, 1) end, 'cursor to the bottom line in view')
   page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
   page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
-  page_map('<LeftDrag>', function() end, 'ignore drags on the page', true)
+  page_map('<LeftDrag>', function() end, 'ignore drags on the page', { mouse = true })
+  local pager = { pager = true }
+  local function half(st) return vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2 end
+  local function screen(st) return (st.top_height - rows(2)) * vim.v.count1 end
+  page_map({ 'j', '<Down>', '<CR>' }, function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'pager: pan down', pager)
+  page_map({ 'k', '<Up>' }, function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'pager: pan up', pager)
+  page_map('d', function(st) scroll_by(buf, half(st)) end, 'pager: pan down half a screen', pager)
+  page_map('u', function(st) scroll_by(buf, -half(st)) end, 'pager: pan up half a screen', pager)
+  page_map('f', function(st) scroll_by(buf, screen(st)) end, 'pager: pan down a screen', pager)
+  page_map('b', function(st) scroll_by(buf, -screen(st)) end, 'pager: pan up a screen', pager)
+  page_map('gg', function(st) scroll_by(buf, -st.top) end, 'pager: pan to the start', pager)
+  page_map('G', function(st) scroll_by(buf, st.layout.total) end, 'pager: pan to the end', pager)
+  page_map('c', function() set_pager(buf, false) end, 'pager: cursor mode', pager)
   map({ 'n', 'x' }, '<LeftMouse>', function()
     if not click(buf) then api.nvim_feedkeys(vim.keycode '<LeftMouse>', 'n', false) end
   end, 'move the cursor to the clicked character')
@@ -1366,10 +1356,8 @@ load = function(buf)
   local ok, reason = kitty.supported()
   if ok and not kitty.cell_size() then ok, reason = false, 'the terminal does not report its size in pixels' end
   if not ok then error('no page view: ' .. reason, 0) end
-  -- :e! keeps the buffer's mappings, and setup_buffer sets the usual ones again.
-  if states[buf] then leave_pager(buf) end
   local res = call('open', { key = buf, path = path })
-  local st = states[buf] or {}
+  local st = states[buf] or { pager = true }
   states[buf] = st
   st.path, st.lines, st.info, st.pages, st.annots = path, res.lines, res.info, res.pages, res.annots
   reset_history(st, buf, res.state)
@@ -1414,10 +1402,16 @@ function M.setup(opts)
   -- An earlier ModeChanged handler (notably which-key) can wait in getchar()
   -- before our handler runs. Scheduled input callbacks still run during that
   -- wait, so repaint after input as well as on native cursor/mode events.
-  vim.on_key(function()
+  -- <Esc> in normal mode on the page view also returns to pager mode; watched
+  -- here rather than mapped, so the user's own <Esc> mapping (:nohlsearch) still runs.
+  vim.on_key(function(_, typed)
     local buf = api.nvim_get_current_buf()
     local st = states[buf]
-    if not st or st.input_refresh_pending then return end
+    if not st then return end
+    if typed == '\27' and not st.pager and st.focus == api.nvim_get_current_win() and api.nvim_get_mode().mode == 'n' then
+      st.pager = true
+    end
+    if st.input_refresh_pending then return end
     st.input_refresh_pending = true
     vim.schedule(function()
       st.input_refresh_pending = nil

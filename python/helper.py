@@ -644,39 +644,59 @@ def m_save(p):
     return {"state": d.state()}
 
 
+def excerpt(text, limit=300):
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def m_snapshot(p):
+    """PNG of the view plus a caption for agents: file, visible pages, notes on
+    them, the selected text, and the cursor (p["cursor"]: [lnum, char index]),
+    which is also marked in the image with a red box and crosshair."""
     d = docs[p["key"]]
     top, height, gap, width = p["top"], p["height"], p["gap"], p["width"]
     ranges = p.get("ranges") or []
     marks = [{"ranges": ranges, "color": p["color"]}] if ranges else []
     pix = render_view(d, width, height, top, gap, marks)
 
-    rows = ["<b>%s</b>" % html.escape(d.path)]
+    shown, notes = {}, []  # page number -> its top in the image
     y = 0.0
     for pno, h in enumerate(page_heights(d, width)):
         if y >= top + height:
             break
         if y + h > top:
+            shown[pno] = y - top
             pw = d.doc[pno].rect.width
             scale = width / pw
             clip = pymupdf.Rect(0, max(0, (top - y) / scale), pw, min(h, top + height - y) / scale)
-            rows.append("page %d of %d · view %s pt" % (pno + 1, len(d.doc), fmt_rect(clip)))
             for annot in d.doc[pno].annots(types=SUPPORTED):
                 text = annot.info.get("content", "").strip()
                 if text and annot.rect.intersects(clip):
-                    rows.append("<b>page %d %s note:</b> %s" % (pno + 1, annot.type[1], html.escape(text)))
+                    notes.append("<b>page %d %s note:</b> %s" % (pno + 1, annot.type[1], html.escape(text)))
         y += h + gap
+    first, last = min(shown) + 1, max(shown) + 1
+    pages = "page %d" % first if first == last else "pages %d–%d" % (first, last)
+    rows = ["<b>%s</b>" % html.escape(d.path), "%s of %d" % (pages, len(d.doc))] + notes
     if ranges:
-        sel = d.range_rect(*ranges[0])
-        for r in ranges[1:]:
-            sel |= d.range_rect(*r)
-        rows.append("selection on page %d: %s pt" % (d.info[ranges[0][0] - 1][0] + 1, fmt_rect(sel)))
+        text = " ".join(d.lines[lnum - 1][cs : ce + 1] for lnum, cs, ce in ranges)
+        rows.append('selected on page %d: "%s"' % (d.info[ranges[0][0] - 1][0] + 1, html.escape(excerpt(text))))
+    cursor = p.get("cursor")
+    if cursor:
+        lnum, ci = cursor
+        line = d.lines[lnum - 1]
+        ci = min(ci, len(line) - 1)
+        before, after = line[max(0, ci - 30) : ci], line[ci + 1 : ci + 31]
+        snippet = ("…" if ci > 30 else "") + before + "[" + line[ci] + "]" + after + ("…" if ci + 31 < len(line) else "")
+        rows.append('cursor on page %d: "%s"' % (d.info[lnum - 1][0] + 1, html.escape(snippet)))
 
     w, h = pix.width, pix.height
     font = max(14, round(w / 80))
     out = pymupdf.open()
     page = out.new_page(width=w, height=h + 100 * font)
     page.insert_image(pymupdf.Rect(0, 0, w, h), pixmap=pix)
+    pno = cursor and d.info[cursor[0] - 1][0]
+    if cursor and pno in shown:
+        char, scale = d.boxes[cursor[0] - 1][ci], width / d.doc[pno].rect.width
+        crosshair(page, pymupdf.Rect(char.x0 * scale, shown[pno] + char.y0 * scale, char.x1 * scale, shown[pno] + char.y1 * scale), w, h)
     pad = font
     box = pymupdf.Rect(pad, h + pad, w - pad, page.rect.y1)
     spare, _ = page.insert_htmlbox(
@@ -693,8 +713,16 @@ def m_snapshot(p):
     return {}
 
 
-def fmt_rect(r):
-    return "(%.0f, %.0f)–(%.0f, %.0f)" % (r.x0, r.y0, r.x1, r.y1)
+def crosshair(page, char, w, h):
+    """Red box around `char` (image pixels), with lines out to the image edges
+    that stop short of the character, so it stays readable."""
+    lw = max(2, w / 800)
+    r = char + (-2 * lw, -2 * lw, 2 * lw, 2 * lw)
+    cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+    red = (0.9, 0, 0)
+    page.draw_rect(r, color=red, width=lw)
+    for a, b in (((0, cy), (r.x0, cy)), ((r.x1, cy), (w, cy)), ((cx, 0), (cx, r.y0)), ((cx, r.y1), (cx, h))):
+        page.draw_line(a, b, color=red, width=lw)
 
 
 def m_char_boxes(p):
