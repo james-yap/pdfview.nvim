@@ -1350,6 +1350,19 @@ end
 function M.setup(opts)
   M.config = vim.tbl_deep_extend('force', M.config, opts or {})
   set_hls()
+  -- An earlier ModeChanged handler (notably which-key) can wait in getchar()
+  -- before our handler runs. Scheduled input callbacks still run during that
+  -- wait, so repaint after input as well as on native cursor/mode events.
+  vim.on_key(function()
+    local buf = api.nvim_get_current_buf()
+    local st = states[buf]
+    if not st or st.input_refresh_pending then return end
+    st.input_refresh_pending = true
+    vim.schedule(function()
+      st.input_refresh_pending = nil
+      if states[buf] == st and api.nvim_get_current_buf() == buf then render(buf, api.nvim_get_current_win()) end
+    end)
+  end, NS)
   api.nvim_create_autocmd('ColorScheme', { group = GROUP, callback = set_hls })
   api.nvim_create_autocmd('BufReadCmd', {
     group = GROUP,

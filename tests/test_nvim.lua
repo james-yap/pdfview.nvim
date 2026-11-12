@@ -9,7 +9,7 @@ end
 vim.g.mapleader = ' '
 vim.o.columns, vim.o.lines = 100, 35
 vim.o.mouse, vim.o.incsearch, vim.o.hlsearch = 'a', true, true
-local shows, errors = 0, {}
+local shows, errors, latest_png = 0, {}, nil
 vim.notify = function(msg, level)
   if level == vim.log.levels.ERROR then errors[#errors + 1] = msg end
 end
@@ -17,11 +17,24 @@ local kitty = require 'pdfview.kitty'
 kitty.supported = function() return true end
 kitty.cell_size = function() return { width = 10, height = 20 } end
 kitty.show = function(png)
+  local file = assert(io.open(png, 'rb'))
+  latest_png = file:read '*a'
+  file:close()
   shows = shows + 1
   os.remove(png)
   return shows
 end
 kitty.delete = function() end
+local block_visual, visual_blocked = false, false
+-- Match a plugin such as which-key waiting for input before later mode hooks run.
+api.nvim_create_autocmd('ModeChanged', {
+  callback = function()
+    if not block_visual or vim.v.event.new_mode ~= 'V' then return end
+    visual_blocked = true
+    vim.fn.getcharstr()
+    visual_blocked = false
+  end,
+})
 local pdfview = require 'pdfview'
 pdfview.setup()
 local states
@@ -50,6 +63,22 @@ step('open hidden page view', function() end, ready, function()
 end)
 step('native j moves the invisible text cursor and PDF tint', function() keys('j') end,
   function() return ready() and cursor()[1] == 2 and filled() end)
+local visual_baseline, visual_cursor
+step('linewise selection paints while an earlier mode callback waits for input', function()
+  visual_baseline, visual_cursor = latest_png, cursor()
+  block_visual = true
+  keys('V')
+end, function() return visual_blocked and ready() and latest_png ~= visual_baseline end, function()
+  assert(vim.fn.mode() == 'V')
+  assert(vim.deep_equal(cursor(), visual_cursor))
+end)
+step('release the earlier mode callback', function()
+  block_visual = false
+  keys('<Esc>')
+end, function() return not visual_blocked and ready() end)
+step('leaving linewise selection restores the normal image without movement', function() keys('<Esc>') end,
+  function() return vim.fn.mode() == 'n' and ready() and latest_png == visual_baseline end,
+  function() assert(vim.deep_equal(cursor(), visual_cursor)) end)
 if vim.env.PDFVIEW_LEAP_RTP then
   step('Leap reaches right column beyond hidden viewport', function()
     leap_shows = shows

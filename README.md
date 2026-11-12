@@ -215,8 +215,9 @@ uv run --with 'pymupdf>=1.26,<1.27' tests/test_helper.py
 ```
 
 This checks continuous page composition, clipping, hit testing, snapshots, hollow
-cursors, note previews, native annotation undo/redo, modified-state transitions
-and lossless annotation restoration through saves (including repaired PDFs).
+cursors, visual selection repainting while an earlier mode callback waits for input,
+note previews, native annotation undo/redo, modified-state transitions and lossless
+annotation restoration through saves (including repaired PDFs).
 The headless Neovim checks use the real helper, replacing only terminal graphics.
 To include the Leap regression (jumping
 to visible page text outside the hidden text viewport), set `PDFVIEW_LEAP_RTP` to
