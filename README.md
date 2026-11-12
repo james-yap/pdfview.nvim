@@ -93,6 +93,7 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | --- | --- | --- |
 | `<leader>py` | n, x | Snapshot for an agent (see below) |
 | `<leader>pt` | n | Toggle full-window pages / text with page pane |
+| `<leader>pp` | n | Pager mode (full-window page view; see below) |
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
@@ -130,6 +131,24 @@ Scrolling keeps the cursor in view where there is text. Search still covers the 
 document; incremental and last-search matches are tinted on the rendered pages.
 Selections and yanks use the extracted text's reading order, not a two-dimensional
 screen rectangle. Use `v` or `V` for selection; mouse dragging is not used in page mode.
+
+### Pager mode
+
+`<leader>pp` turns the page view into a pager, like `less` or Vimium: keys pan the
+pages, the cursor is not drawn, and the badge reads `PAGER` with the page in the middle
+of the view. The cursor still follows the view, so leaving resumes where you stopped.
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, `<Down>` / `<Up>`, `<CR>` | Pan down / up three rows (takes a count) |
+| `d` / `u`, `<C-d>` / `<C-u>` | Pan half a view; an explicit count pans that many rows |
+| `f` / `b`, `<Space>`, `<C-f>` / `<C-b>` | Pan down / up a view with two rows of overlap (takes a count) |
+| `gg` / `G` | Pan to the start / end |
+| `q` / `<Esc>` | Leave pager mode |
+
+Other keys keep working (`]p`, `/`, the mouse wheel, ...). The pager keys stand in
+for the buffer's own mappings of the same keys (such as `u` for annotation undo) until
+you leave; toggling to split mode also leaves.
 
 ## Annotations and saving
 

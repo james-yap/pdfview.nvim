@@ -474,10 +474,21 @@ local function view_for(buf, win)
   return { top = top, width = width, height = height, cols = cols, rows = rows, layout = L }
 end
 
+--- The 1-based page at doc pixel `y` (or the page before the gap it falls in).
+local function page_at(L, y)
+  local i = 1
+  while L.tops[i + 1] and L.tops[i + 1] <= y do
+    i = i + 1
+  end
+  return i
+end
+
 --- The "page/pages" badge in the pane's bottom-right corner, left of the
---- scrollbar, for the page holding the cursor of `win`.
+--- scrollbar: the page holding the cursor of `win`, or in pager mode, where
+--- the cursor is not drawn, the page in the middle of the view.
 local function update_badge(st, win, view)
-  local text = (' %d/%d '):format(st.info[api.nvim_win_get_cursor(win)[1]][1] + 1, #st.pages)
+  local text = st.pager and (' PAGER %d/%d '):format(page_at(view.layout, view.top + view.height / 2), #st.pages)
+    or (' %d/%d '):format(st.info[api.nvim_win_get_cursor(win)[1]][1] + 1, #st.pages)
   local width = #text
   local config = {
     relative = 'win',
@@ -533,7 +544,7 @@ local function search_ranges(buf, visible)
 end
 
 --- Tints for the view: search matches, then the selection (visual mode in `win`)
---- or else the cursor line, then the character under the cursor.
+--- or else the cursor line, then the character under the cursor (neither in pager mode).
 local function marks_for(buf, win, view)
   local st = states[buf]
   local visible = lines_in(st, view.layout, view.top, view.height)
@@ -550,7 +561,7 @@ local function marks_for(buf, win, view)
     ranges = vim.tbl_filter(function(r) return shown[r[1]] end, ranges)
     if #ranges > 0 then marks[#marks + 1] = { ranges = ranges, color = COLORS.selection } end
   end
-  if st.info[lnum][4] then return marks end
+  if st.info[lnum][4] or st.pager then return marks end
   local text = st.lines[lnum]
   if not ranges then marks[#marks + 1] = { ranges = { { lnum, 0, vim.str_utfindex(text, 'utf-32') - 1 } }, color = COLORS.cursor } end
   local ci = char_index(text, col)
@@ -639,9 +650,26 @@ local function refresh(buf)
   end)
 end
 
+--- Leave pager mode: put back the buffer's own mappings of the pager keys.
+--- The caller repaints, if the view is still there.
+local function leave_pager(buf)
+  local st = states[buf]
+  local saved = st.pager
+  if not saved then return end
+  st.pager = nil
+  if not api.nvim_buf_is_valid(buf) then return end
+  api.nvim_buf_call(buf, function()
+    for lhs, map in pairs(saved) do
+      pcall(vim.keymap.del, 'n', lhs, { buffer = buf })
+      if map then vim.fn.mapset(map) end
+    end
+  end)
+end
+
 --- Switch `buf` between page mode and split mode.
 local function toggle(buf)
   local st = states[buf]
+  leave_pager(buf)
   st.mode = st.mode == 'page' and 'split' or 'page'
   local win = text_window(buf)
   uncover(st)
@@ -783,6 +811,55 @@ local function screen_line(buf, where)
   api.nvim_win_set_cursor(st.focus, { best, 0 })
 end
 
+-- Pager mode: like less or Vimium, keys pan the pages and the cursor is not
+-- drawn (it still follows the view, so leaving resumes there). The pager keys
+-- stand in for the buffer's own mappings of the same keys until it ends.
+
+--- { keys, action(st), description } for pager mode in `buf`.
+local function pager_keys(buf)
+  local function rows(n) return n * kitty.cell_size().height end
+  local function step() return rows(3 * vim.v.count1) end
+  local function half(st) return vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2 end
+  local function screen(st) return (st.top_height - rows(2)) * vim.v.count1 end
+  return {
+    { { 'j', '<Down>', '<CR>' }, function() scroll_by(buf, step()) end, 'pan down' },
+    { { 'k', '<Up>' }, function() scroll_by(buf, -step()) end, 'pan up' },
+    { { 'd' }, function(st) scroll_by(buf, half(st)) end, 'pan down half a screen' },
+    { { 'u' }, function(st) scroll_by(buf, -half(st)) end, 'pan up half a screen' },
+    { { 'f', '<Space>' }, function(st) scroll_by(buf, screen(st)) end, 'pan down a screen' },
+    { { 'b' }, function(st) scroll_by(buf, -screen(st)) end, 'pan up a screen' },
+    { { 'gg' }, function(st) scroll_by(buf, -st.top) end, 'pan to the start' },
+    { { 'G' }, function(st) scroll_by(buf, st.layout.total) end, 'pan to the end' },
+    { { 'q', '<Esc>' }, function(st)
+      leave_pager(buf)
+      render(buf, st.focus)
+    end, 'leave pager mode' },
+  }
+end
+
+local function enter_pager(buf)
+  local st = states[buf]
+  if st.pager then return end
+  if not (covered(st) and st.top and api.nvim_get_current_win() == st.focus) then
+    return notify('Pager mode needs the full-window page view', vim.log.levels.WARN)
+  end
+  st.pager = {}
+  for _, k in ipairs(pager_keys(buf)) do
+    for _, lhs in ipairs(k[1]) do
+      local saved = vim.fn.maparg(lhs, 'n', false, true)
+      st.pager[lhs] = saved.buffer == 1 and saved or false
+      vim.keymap.set('n', lhs, function()
+        if covered(st) and api.nvim_get_current_win() == st.focus then return k[2](st) end
+        -- The page view is gone (another window, :q, ...): end pager mode and do the key's usual thing.
+        local count = vim.v.count > 0 and vim.v.count or ''
+        leave_pager(buf)
+        api.nvim_feedkeys(count .. vim.keycode(lhs), 'm', false)
+      end, { buffer = buf, desc = 'PDF pager: ' .. k[3] })
+    end
+  end
+  render(buf, st.focus)
+end
+
 --- Move the cursor to the character under a mouse click on the pages.
 --- Returns false when the click was not on the pages.
 local function click(buf)
@@ -793,10 +870,7 @@ local function click(buf)
   if pos.winrow < 1 or pos.winrow > v.rows or pos.wincol < 1 or pos.wincol > v.cols then return false end
   local L = v.layout
   local y = v.top + (pos.winrow - 0.5) * cell.height
-  local i = 1
-  while L.tops[i + 1] and L.tops[i + 1] <= y do
-    i = i + 1
-  end
+  local i = page_at(L, y)
   local s = L.scales[i]
   local hit = try_call('hit', { key = buf, page = i - 1, x = (pos.wincol - 0.5) * cell.width / s, y = (y - L.tops[i]) / s })
   local win = cursor_window(buf)
@@ -1247,6 +1321,7 @@ end
 local function unload(buf)
   local st = states[buf]
   if not st then return end
+  leave_pager(buf)
   states[buf] = nil
   if st.poll then st.poll:close() end
   uncover(st)
@@ -1341,6 +1416,7 @@ local function setup_buffer(buf)
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')
   map('n', prefixed 't', function() toggle(buf) end, 'toggle page view / text with page pane')
+  map('n', prefixed 'p', function() enter_pager(buf) end, 'pager mode: keys pan the pages')
   map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
   map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
   map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
@@ -1390,6 +1466,8 @@ end
 
 load = function(buf)
   local path = canonical(api.nvim_buf_get_name(buf))
+  -- :e! keeps the buffer's mappings, and setup_buffer sets the usual ones again.
+  if states[buf] then leave_pager(buf) end
   local res = call('open', { key = buf, path = path })
   local st = states[buf] or {}
   states[buf] = st

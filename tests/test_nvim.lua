@@ -108,6 +108,20 @@ step('PageUp returns to the first line of the first page', function() keys('<Pag
     assert(st().top == 0)
     assert(badge() == ' 1/2 ', badge())
   end)
+step('pager mode hides the cursor and labels the badge', function() keys(' pp') end,
+  function() return ready() and st().pager and badge() == ' PAGER 1/2 ' end, function()
+    for _, m in ipairs(vim.json.decode(st().render_key)[4]) do
+      assert(m.color ~= 0xDDEBFF and m.color ~= 0x8AB8FF, 'cursor drawn in pager mode')
+    end
+  end)
+step('pager j pans three rows', function() keys('j') end, function() return ready() and st().top == 60 end)
+step('pager u pans instead of undoing', function() keys('u') end, function() return ready() and st().top == 0 end)
+step('q leaves pager mode and restores the buffer keys', function() keys('q') end,
+  function() return ready() and not st().pager and badge() == ' 1/2 ' end, function()
+    assert(vim.fn.maparg('u', 'n', false, true).desc == 'PDF: undo annotation change')
+    assert(vim.fn.maparg('j', 'n') == '')
+    assert(filled())
+  end)
 step('terminal focus lost makes cursor hollow', function() api.nvim_exec_autocmds('FocusLost', {}) end,
   function() return ready() and outline() end)
 step('terminal focus gained restores filled cursor', function() api.nvim_exec_autocmds('FocusGained', {}) end,
