@@ -127,6 +127,17 @@ step('Esc ends the selection and stays in cursor mode', function() keys('<Esc>')
   function() return ready() and vim.fn.mode() == 'n' and not st().pager and filled() end, function()
     assert(vim.fn.maparg('u', 'n', false, true).desc == 'PDF: pager: pan up half a screen')
   end)
+local mark_top, end_top
+step('a mark set in pager mode', function() keys('<Esc>2jma') end,
+  function() return ready() and st().pager and st().top == 120 end, function() mark_top = st().top end)
+step('G pans away from the mark', function() keys('G') end,
+  function() return ready() and st().top > mark_top + st().top_height end, function() end_top = st().top end)
+step("'a returns to the exact view of the mark", function() keys("'a") end,
+  function() return ready() and math.abs(st().top - mark_top) < 0.5 end)
+step("'' returns to the exact view before the jump", function() keys("''") end,
+  function() return ready() and math.abs(st().top - end_top) < 0.5 end)
+step('back to the start in cursor mode', function() keys('ggc') end,
+  function() return ready() and st().top == 0 and not st().pager end)
 step('terminal focus lost makes cursor hollow', function() api.nvim_exec_autocmds('FocusLost', {}) end,
   function() return ready() and outline() end)
 step('terminal focus gained restores filled cursor', function() api.nvim_exec_autocmds('FocusGained', {}) end,

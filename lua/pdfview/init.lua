@@ -369,8 +369,18 @@ local function clamp_top(L, height, top) return math.floor(math.max(0, math.min(
 --- Width in pixels of the scrollbar the helper draws at the right edge of a view `width` pixels wide.
 local function scrollbar_width(width) return math.max(12, math.floor(width / 60)) end
 
+--- Identifies the jumplist of `win`: it changes on every jump (marks, '', <C-o>, n, ...).
+local function jumplist_key(win)
+  local list, idx = unpack(vim.fn.getjumplist(win))
+  local last = list[#list] or {}
+  return ('%d:%d:%d:%d'):format(idx, #list, last.lnum or 0, last.col or 0)
+end
+
 --- The view for the pane's current size: st.top, moved only when the cursor
 --- line changes or the pane resizes.
+--- A jump to a line out of view restores the view that line was last seen in
+--- from a jump or a mark (st.views), so marks and the jumplist return to the
+--- exact view; other moves scroll just enough to show the line.
 --- The image is rendered at exactly cols x rows cells of terminal pixels.
 local function view_for(st)
   local cell = assert(kitty.cell_size())
@@ -381,14 +391,22 @@ local function view_for(st)
   local lnum = api.nvim_win_get_cursor(st.focus)[1]
   local a, b = line_span(st, L, lnum)
   local top = st.top
+  local jumps = jumplist_key(st.focus)
   if not top or st.top_width ~= width then
     top = (a + b) / 2 - height * 0.4
-  elseif lnum ~= st.follow_lnum or height ~= st.top_height then
+  elseif lnum ~= st.follow_lnum or height ~= st.top_height or jumps ~= st.jumps then
+    local jumped = jumps ~= st.jumps
+    if jumped and st.follow_lnum then st.views[st.follow_lnum] = (line_span(st, L, st.follow_lnum) - top) / width end
+    local saved = st.views[lnum]
+    if jumped and saved and (a < top or b > top + height) then
+      top = a - saved * width
     -- Don't move the labels under the user's eyes while leap selects a target.
-    if not st.leaping or a < top or b > top + height then top = follow(top, height, a, b) end
+    elseif not st.leaping or a < top or b > top + height then
+      top = follow(top, height, a, b)
+    end
   end
   top = clamp_top(L, height, top)
-  st.top, st.top_width, st.top_height, st.follow_lnum = top, width, height, lnum
+  st.top, st.top_width, st.top_height, st.follow_lnum, st.jumps = top, width, height, lnum, jumps
   return { top = top, width = width, height = height, cols = cols, rows = rows, layout = L }
 end
 
@@ -648,6 +666,9 @@ end
 
 --- Scroll the view by `delta` doc pixels. Like Vim, the cursor stays on screen:
 --- if it scrolled out, it moves to the first (scrolling down) or last line now in view.
+--- In pager mode it moves to the top line in view, or without text in view to
+--- the header of the page in the middle, so each view has its own cursor line:
+--- marks and the jumplist can then tell views apart (view_for).
 local function scroll_by(buf, delta)
   local st = states[buf]
   local L, height, win = st.layout, st.top_height, st.focus
@@ -655,17 +676,18 @@ local function scroll_by(buf, delta)
   local m = margin(height)
   local lnum = api.nvim_win_get_cursor(win)[1]
   local a, b = line_span(st, L, lnum)
-  if a < st.top + m or b > st.top + height - m then
+  if st.pager or a < st.top + m or b > st.top + height - m then
     local best, best_y
     for _, l in ipairs(lines_in(st, L, st.top + m, height - 2 * m)) do
       local la, lb = line_span(st, L, l)
-      local y = delta > 0 and la or -lb
+      local y = (st.pager or delta > 0) and la or -lb
       if la >= st.top + m and lb <= st.top + height - m and (not best or y < best_y) then
         best, best_y = l, y
       end
     end
+    if st.pager and not best then best = st.headers[page_at(L, st.top + height / 2)] end
     -- Column 0 keeps the cursor's column.
-    if best then api.nvim_win_call(win, function() vim.fn.cursor(best, 0) end) end
+    if best and best ~= lnum then api.nvim_win_call(win, function() vim.fn.cursor(best, 0) end) end
   end
   st.follow_lnum = api.nvim_win_get_cursor(win)[1]
   render(buf)
@@ -877,16 +899,16 @@ local function leap_targets(buf, win)
 end
 
 --- leap with the page view's targets from the hidden float; plain leap elsewhere.
---- A jump on the page view enters cursor mode.
+--- Starting it on the page view enters cursor mode.
 local function leap_on_page(buf)
   local st = states[buf]
   local win = api.nvim_get_current_win()
   local kwargs = { windows = { win }, inclusive = true }
-  if not (st and st.view and covered(st) and win == st.focus) then return require('leap').leap(kwargs) end
-  kwargs.targets = leap_targets(buf, win)
-  local before = api.nvim_win_get_cursor(win)
+  if st and st.view and covered(st) and win == st.focus then
+    set_pager(buf, false)
+    kwargs.targets = leap_targets(buf, win)
+  end
   require('leap').leap(kwargs)
-  if not vim.deep_equal(before, api.nvim_win_get_cursor(win)) then set_pager(buf, false) end
 end
 
 --- Keys mapped to leap's <Plug>(leap), per mode, or M.config.keys.leap in n/x/o.
@@ -1278,6 +1300,16 @@ local function setup_buffer(buf)
   map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')
+  -- Marks also remember the page view, which a later jump to them restores (view_for).
+  map('n', 'm', function()
+    local mark = vim.fn.getcharstr()
+    local st = states[buf]
+    if st and st.view and covered(st) and api.nvim_get_current_win() == st.focus then
+      local lnum = api.nvim_win_get_cursor(st.focus)[1]
+      st.views[lnum] = (line_span(st, st.layout, lnum) - st.top) / st.top_width
+    end
+    pcall(vim.cmd.normal, { 'm' .. mark, bang = true })
+  end, 'set a mark that also remembers the page view')
   map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
   map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
   map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
@@ -1359,7 +1391,8 @@ load = function(buf)
   st.path, st.lines, st.info, st.pages, st.annots = path, res.lines, res.info, res.pages, res.annots
   reset_history(st, buf, res.state)
   st.stat, st.warned, st.version = stat_key(path), nil, (st.version or 0) + 1
-  st.layout, st.headers = nil, {}
+  -- Line numbers can change: drop views remembered per line.
+  st.layout, st.headers, st.views, st.follow_lnum = nil, {}, {}, nil
   for lnum, info in ipairs(st.info) do
     if info[4] then st.headers[info[1] + 1] = lnum end
   end
