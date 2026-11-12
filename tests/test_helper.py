@@ -101,7 +101,7 @@ class PageViewTest(unittest.TestCase):
         finally:
             del helper.docs[1]
 
-    def test_snapshot_marks_cursor_with_crosshair_that_leaves_the_character_readable(self):
+    def test_snapshot_marks_cursor_with_a_local_x_that_leaves_the_character_readable(self):
         helper.docs[1] = self.d
         out = str(Path(self.tmp.name) / "snapshot.png")
         lnum = self.d.page_lines[1][0]
@@ -111,10 +111,27 @@ class PageViewTest(unittest.TestCase):
             helper.m_snapshot({"key": 1, "top": 610, "height": 200, "gap": 10, "width": 400, "ranges": [], "cursor": [lnum, 2], "out": out})
             pix = pymupdf.Pixmap(out)
             red = lambda p: p[0] > 150 and p[2] < 100
-            self.assertTrue(red(pix.pixel(1, cy)) and red(pix.pixel(399, cy)), "horizontal line reaches both edges")
-            self.assertTrue(red(pix.pixel(cx, 1)) and red(pix.pixel(cx, 198)), "vertical line reaches both edges")
+            # An arm runs diagonally down-right from the box's corner (inset by 2 line widths).
+            corner = int(box.x1 + 4), int(box.y1 + 4)
+            self.assertTrue(red(pix.pixel(corner[0] + 10, corner[1] + 10)), "diagonal arm")
+            self.assertFalse(red(pix.pixel(1, cy)) or red(pix.pixel(399, cy)), "no line to the side edges")
+            self.assertFalse(red(pix.pixel(cx, 198)), "no line to the bottom edge")
             self.assertFalse(red(pix.pixel(cx, cy)), "the character itself is not covered")
-            self.assertEqual(pix.pixel(200, 1), (0, 0, 255))
+        finally:
+            del helper.docs[1]
+
+    def test_snapshot_boxes_the_selection(self):
+        helper.docs[1] = self.d
+        out = str(Path(self.tmp.name) / "snapshot.png")
+        lnum = self.d.page_lines[1][0]
+        box = (self.d.boxes[lnum - 1][0] | self.d.boxes[lnum - 1][5]) * 4
+        try:
+            helper.m_snapshot({"key": 1, "top": 610, "height": 200, "gap": 10, "width": 400, "ranges": [[lnum, 0, 5]], "color": 0xA8D1FF, "out": out})
+            pix = pymupdf.Pixmap(out)
+            red = lambda p: p[0] > 150 and p[2] < 100
+            mid = int((box.y0 + box.y1) / 2)
+            self.assertTrue(red(pix.pixel(int(box.x1) + 6, mid)), "right side of the box")
+            self.assertFalse(red(pix.pixel(int(box.x1) + 20, mid)), "nothing beyond the box")
         finally:
             del helper.docs[1]
 

@@ -23,6 +23,7 @@ import contextlib
 import functools
 import html
 import json
+import math
 import os
 import sys
 import tempfile
@@ -650,8 +651,9 @@ def excerpt(text, limit=300):
 
 def m_snapshot(p):
     """PNG of the view plus a caption for agents: file, visible pages, notes on
-    them, the selected text, and the cursor (p["cursor"]: [lnum, char index]),
-    which is also marked in the image with a red box and crosshair."""
+    them, the selected text, and the cursor (p["cursor"]: [lnum, char index]).
+    The image boxes the selection, or marks the cursor's character with a box
+    and a small "x"."""
     d = docs[p["key"]]
     top, height, gap, width = p["top"], p["height"], p["gap"], p["width"]
     ranges = p.get("ranges") or []
@@ -693,10 +695,31 @@ def m_snapshot(p):
     out = pymupdf.open()
     page = out.new_page(width=w, height=h + 100 * font)
     page.insert_image(pymupdf.Rect(0, 0, w, h), pixmap=pix)
-    pno = cursor and d.info[cursor[0] - 1][0]
-    if cursor and pno in shown:
-        char, scale = d.boxes[cursor[0] - 1][ci], width / d.doc[pno].rect.width
-        crosshair(page, pymupdf.Rect(char.x0 * scale, shown[pno] + char.y0 * scale, char.x1 * scale, shown[pno] + char.y1 * scale), w, h)
+
+    def image_rect(lnum, chars):
+        """Bounds in the image of characters `chars` of line `lnum`, None off view."""
+        pno, boxes = d.info[lnum - 1][0], d.boxes[lnum - 1]
+        chars = [ci for ci in chars if ci < len(boxes)]
+        if pno not in shown or not chars:
+            return None
+        r = pymupdf.Rect(boxes[chars[0]])
+        for ci in chars[1:]:
+            r |= boxes[ci]
+        return r * (width / d.doc[pno].rect.width) + (0, shown[pno], 0, shown[pno])
+
+    lw = max(2, w / 800)
+    if ranges:
+        rects = [image_rect(lnum, range(cs, ce + 1)) for lnum, cs, ce in ranges]
+        rects = [r for r in rects if r]
+        if rects:
+            r = rects[0]
+            for other in rects[1:]:
+                r |= other
+            page.draw_rect((r + (-3 * lw, -3 * lw, 3 * lw, 3 * lw)) & pymupdf.Rect(0, 0, w, h), color=RED, width=lw)
+    elif cursor:
+        r = image_rect(cursor[0], [ci])
+        if r:
+            cursor_marker(page, r, lw, w, h)
     pad = font
     box = pymupdf.Rect(pad, h + pad, w - pad, page.rect.y1)
     spare, _ = page.insert_htmlbox(
@@ -713,16 +736,19 @@ def m_snapshot(p):
     return {}
 
 
-def crosshair(page, char, w, h):
-    """Red box around `char` (image pixels), with lines out to the image edges
-    that stop short of the character, so it stays readable."""
-    lw = max(2, w / 800)
+RED = (0.9, 0, 0)
+
+
+def cursor_marker(page, char, lw, w, h):
+    """Red box around `char` (image pixels) with diagonal arms about two line
+    heights long from its corners, kept inside the w x h image."""
     r = char + (-2 * lw, -2 * lw, 2 * lw, 2 * lw)
-    cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
-    red = (0.9, 0, 0)
-    page.draw_rect(r, color=red, width=lw)
-    for a, b in (((0, cy), (r.x0, cy)), ((r.x1, cy), (w, cy)), ((cx, 0), (cx, r.y0)), ((cx, r.y1), (cx, h))):
-        page.draw_line(a, b, color=red, width=lw)
+    page.draw_rect(r, color=RED, width=lw)
+    arm = 2 * char.height / math.sqrt(2)  # along each axis
+    for x, y, sx, sy in ((r.x0, r.y0, -1, -1), (r.x1, r.y0, 1, -1), (r.x0, r.y1, -1, 1), (r.x1, r.y1, 1, 1)):
+        reach = min(arm, w - x if sx > 0 else x, h - y if sy > 0 else y)
+        if reach > 0:
+            page.draw_line((x, y), (x + sx * reach, y + sy * reach), color=RED, width=lw)
 
 
 def m_char_boxes(p):

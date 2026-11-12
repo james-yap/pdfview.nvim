@@ -187,14 +187,14 @@ newer file; `:e!` picks up the new version.
 ## Snapshots for agents
 
 `<leader>py` captures the visible regions of the stacked pages, with the visual
-selection tinted, and adds a caption strip below it:
+selection tinted and boxed in red, and adds a caption strip below it:
 
 - the PDF's absolute path,
 - the visible pages and the page count,
 - the text of every note visible on those parts of the pages,
 - the selected text (up to 300 characters), or in cursor mode without a selection, the
   cursor's page and the text around it with the character in brackets. The image marks
-  that character with a red box and lines out to the edges.
+  that character with a red box and a small "x" around it.
 
 The result is one PNG, so it works both in a local agent harness (via its path) and in a
 web chat (paste the image). Vision models read the page text from the image; the caption
