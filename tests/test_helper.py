@@ -65,7 +65,7 @@ class PageViewTest(unittest.TestCase):
 
     def test_scrollbar_bulk_fills_preserve_page_and_track_boundaries(self):
         pix = helper.render_view(self.d, 400, 120, 570, 10, [])
-        helper.scrollbar(pix, self.d, 570, 10)
+        helper.scrollbar(pix, self.d, 570, 10, 12)
         # Page composition is untouched to the left of the 12px scrollbar.
         self.assertEqual(pix.pixel(387, 0), (255, 0, 0))
         self.assertEqual(pix.pixel(387, 119), (0, 0, 255))

@@ -507,13 +507,12 @@ def render_view(d, width, height, top, gap, marks):
     return out
 
 
-def scrollbar(pix, d, top, gap):
-    """Document-wide scrollbar on the right edge of `pix`: the thumb is the visible
-    part of the stacked pages, with ticks at page boundaries."""
+def scrollbar(pix, d, top, gap, width):
+    """Document-wide scrollbar `width` px wide on the right edge of `pix`: the thumb
+    is the visible part of the stacked pages, with ticks at page boundaries."""
     heights = page_heights(d, pix.width)
     total = sum(heights) + gap * (len(heights) - 1)
     h = pix.height
-    width = max(12, pix.width // 60)
     ox = pix.width - width
     samples, stride = pix.samples_mv, pix.stride
 
@@ -567,7 +566,7 @@ def m_render(p):
     d = docs[p["key"]]
     pix = render_view(d, p["width"], p["height"], p["top"], p["gap"], p.get("marks"))
     if p.get("scrollbar"):
-        scrollbar(pix, d, p["top"], p["gap"])
+        scrollbar(pix, d, p["top"], p["gap"], p["scrollbar"])
     pix.save(p["out"])
     return {}
 

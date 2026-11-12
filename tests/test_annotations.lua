@@ -89,8 +89,8 @@ end
 local function floats()
   local out = {}
   for _, w in ipairs(api.nvim_list_wins()) do
-    local pane = st() and st().pane
-    if api.nvim_win_get_config(w).relative ~= '' and w ~= st().focus and not (pane and pane.win == w) then out[#out + 1] = w end
+    local pane, badge = st() and st().pane, st() and st().badge
+    if api.nvim_win_get_config(w).relative ~= '' and w ~= st().focus and not (pane and pane.win == w) and not (badge and badge.win == w) then out[#out + 1] = w end
   end
   return out
 end

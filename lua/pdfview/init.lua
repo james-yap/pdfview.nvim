@@ -28,10 +28,21 @@ local NOTE_TYPES = { Text = true, FreeText = true }
 
 ---@class pdfview.Config
 M.config = {
-  -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
+  -- Buffer-local keys in PDF buffers; set any of them to false to skip it. A key
+  -- can also be a list of keys.
   -- leap: keys that run pdfview's leap (targets everything the page view shows).
   -- nil: whatever you mapped to <Plug>(leap), in the same modes.
-  keys = { prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil, hover = 'K', undo = 'u', redo = '<C-r>' },
+  keys = {
+    prefix = '<leader>p',
+    next_annotation = ']a',
+    prev_annotation = '[a',
+    next_page = { ']p', '<PageDown>' },
+    prev_page = { '[p', '<PageUp>' },
+    leap = nil,
+    hover = 'K',
+    undo = 'u',
+    redo = '<C-r>',
+  },
   -- 'page': the pages fill the PDF's window and the text is hidden; 'split': the
   -- text window plus a page pane to its right. <prefix>t toggles per buffer.
   view = 'page',
@@ -176,6 +187,7 @@ local function set_hls()
   api.nvim_set_hl(0, 'PdfViewStrikeOut', { default = true, strikethrough = true })
   api.nvim_set_hl(0, 'PdfViewSquiggly', { default = true, undercurl = true, sp = '#e05252' })
   api.nvim_set_hl(0, 'PdfViewNote', { default = true, link = 'Comment' })
+  api.nvim_set_hl(0, 'PdfViewPage', { default = true, link = 'StatusLine' })
 end
 
 local function decorate(buf)
@@ -209,8 +221,14 @@ end
 
 local function pane_valid(st) return st.pane ~= nil and api.nvim_win_is_valid(st.pane.win) end
 
+local function close_badge(st)
+  if st.badge and api.nvim_win_is_valid(st.badge.win) then api.nvim_win_close(st.badge.win, true) end
+  st.badge = nil
+end
+
 local function close_pane(st)
   if st.image then kitty.delete(st.image) end
+  close_badge(st)
   -- After :bd the pane can be the last window; it cannot close, so it shows an empty buffer.
   if pane_valid(st) and not pcall(api.nvim_win_close, st.pane.win, true) then
     vim.wo[st.pane.win].winfixbuf = false
@@ -429,6 +447,9 @@ end
 
 local function clamp_top(L, height, top) return math.floor(math.max(0, math.min(L.total - height, top))) end
 
+--- Width in pixels of the scrollbar the helper draws at the right edge of a view `width` pixels wide.
+local function scrollbar_width(width) return math.max(12, math.floor(width / 60)) end
+
 --- The view for the pane's current size: st.top, moved only when the cursor
 --- line changes or the pane resizes.
 --- The image is rendered at exactly cols x rows cells of terminal pixels.
@@ -451,6 +472,38 @@ local function view_for(buf, win)
   top = clamp_top(L, height, top)
   st.top, st.top_width, st.top_height, st.follow_lnum = top, width, height, lnum
   return { top = top, width = width, height = height, cols = cols, rows = rows, layout = L }
+end
+
+--- The "page/pages" badge in the pane's bottom-right corner, left of the
+--- scrollbar, for the page holding the cursor of `win`.
+local function update_badge(st, win, view)
+  local text = (' %d/%d '):format(st.info[api.nvim_win_get_cursor(win)[1]][1] + 1, #st.pages)
+  local width = #text
+  local config = {
+    relative = 'win',
+    win = st.pane.win,
+    row = view.rows - 1,
+    col = view.cols - math.ceil(scrollbar_width(view.width) / kitty.cell_size().width) - width,
+    width = width,
+    height = 1,
+  }
+  if config.col < 0 or config.row < 1 then return close_badge(st) end
+  local b = st.badge
+  if b and api.nvim_win_is_valid(b.win) then
+    if b.config.row ~= config.row or b.config.col ~= config.col or b.config.width ~= width then api.nvim_win_set_config(b.win, config) end
+  else
+    local bbuf = api.nvim_create_buf(false, true)
+    vim.bo[bbuf].bufhidden = 'wipe'
+    local opts = { focusable = false, mouse = false, zindex = 2, style = 'minimal', noautocmd = true }
+    b = { buf = bbuf, win = api.nvim_open_win(bbuf, false, vim.tbl_extend('force', config, opts)) }
+    vim.wo[b.win].winhighlight = 'Normal:PdfViewPage'
+    st.badge = b
+  end
+  b.config = config
+  if b.text ~= text then
+    api.nvim_buf_set_lines(b.buf, 0, -1, false, { text })
+    b.text = text
+  end
 end
 
 --- Matches of the search being typed (incsearch) or of the last search (while
@@ -541,6 +594,7 @@ local function render(buf, win)
     return
   end
   local view = view_for(buf, win)
+  update_badge(st, win, view)
   local marks = marks_for(buf, win, view)
   local key = vim.json.encode { view.top, view.width, view.height, marks, st.version }
   if key == st.render_key then return end
@@ -549,8 +603,16 @@ local function render(buf, win)
   -- kitty and Ghostty only accept temporary files named like this, in $TMPDIR.
   local png = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-%d.png'):format(vim.fn.getpid(), render_id))
   local pane_buf = st.pane.buf
-  local params =
-    { key = buf, top = view.top, width = view.width, height = view.height, gap = view.layout.gap, marks = marks, scrollbar = true, out = png }
+  local params = {
+    key = buf,
+    top = view.top,
+    width = view.width,
+    height = view.height,
+    gap = view.layout.gap,
+    marks = marks,
+    scrollbar = scrollbar_width(view.width),
+    out = png,
+  }
   request('render', params, function(err)
     st.busy = false
     if err then
@@ -683,6 +745,23 @@ local function align(buf, where)
   local top = where == 0 and a - m or where == 1 and b - height + m or (a + b - height) / 2
   st.top, st.follow_lnum = clamp_top(L, height, top), lnum
   render(buf, st.focus)
+end
+
+--- ]p / [p: move the cursor to the first line of the page `count` pages after (dir 1)
+--- or before (dir -1) the cursor's, and show that page from its top.
+local function jump_page(buf, dir, count)
+  local st = states[buf]
+  local win = api.nvim_get_current_win()
+  local page = st.info[api.nvim_win_get_cursor(win)[1]][1] + 1
+  local target = math.max(1, math.min(#st.pages, page + dir * count))
+  local header = st.headers[target]
+  -- The page header when the page has no text.
+  local lnum = header + 1 < (st.headers[target + 1] or #st.lines + 1) and header + 1 or header
+  if st.layout and st.top_height and pane_valid(st) then
+    st.top, st.follow_lnum = clamp_top(st.layout, st.top_height, st.layout.tops[target]), lnum
+  end
+  api.nvim_win_set_cursor(win, { lnum, 0 })
+  render(buf, win)
 end
 
 --- H / M / L: move the cursor to the top (0), middle (0.5) or bottom (1) line in view.
@@ -1248,7 +1327,9 @@ local function setup_buffer(buf)
 
   local keys = M.config.keys
   local function map(mode, lhs, fn, desc)
-    if lhs then vim.keymap.set(mode, lhs, fn, { buffer = buf, desc = 'PDF: ' .. desc }) end
+    for _, l in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
+      if l then vim.keymap.set(mode, l, fn, { buffer = buf, desc = 'PDF: ' .. desc }) end
+    end
   end
   local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
   map({ 'n', 'x' }, prefixed 'y', function() snapshot(buf) end, 'copy snapshot for agent')
@@ -1265,6 +1346,8 @@ local function setup_buffer(buf)
   map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
   map('n', keys.next_annotation, function() jump(buf, 1, vim.v.count1) end, 'next annotation')
   map('n', keys.prev_annotation, function() jump(buf, -1, vim.v.count1) end, 'previous annotation')
+  map({ 'n', 'x' }, keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
+  map({ 'n', 'x' }, keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
 
   if pcall(require, 'leap') then
     for _, k in ipairs(leap_keys()) do

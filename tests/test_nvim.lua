@@ -97,6 +97,17 @@ step('counted scrolling', function()
   scroll_top = st().top
   keys('3<C-e>')
 end, function() return ready() and st().top == scroll_top + 60 end)
+local function badge() return api.nvim_buf_get_lines(st().badge.buf, 0, -1, false)[1] end
+step('next page shows the second page from its top', function() keys(']p') end,
+  function() return ready() and vim.fn.getline('.') == 'second page' end, function()
+    assert(st().top == math.floor(st().layout.tops[2]))
+    assert(badge() == ' 2/2 ', badge())
+  end)
+step('PageUp returns to the first line of the first page', function() keys('<PageUp>') end,
+  function() return ready() and cursor()[1] == 2 end, function()
+    assert(st().top == 0)
+    assert(badge() == ' 1/2 ', badge())
+  end)
 step('terminal focus lost makes cursor hollow', function() api.nvim_exec_autocmds('FocusLost', {}) end,
   function() return ready() and outline() end)
 step('terminal focus gained restores filled cursor', function() api.nvim_exec_autocmds('FocusGained', {}) end,

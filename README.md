@@ -8,7 +8,9 @@ continuous scrolling. The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks,
 visual mode and yanking still operate on real buffer text. The view follows the
 cursor, tints its line or visual selection, and marks the character under the cursor.
 The cursor becomes hollow when you leave the PDF window or the terminal loses focus.
-A document-wide scrollbar at the right edge marks page boundaries.
+A document-wide scrollbar at the right edge marks page boundaries, and a badge beside
+its bottom end shows the cursor's page and the page count (highlight `PdfViewPage`,
+linked to `StatusLine`).
 
 `<leader>pt` toggles the extracted text alongside the pages, useful for inspecting
 reading order or checking what a yank copies. Neither layout greys out page content.
@@ -65,8 +67,10 @@ Defaults:
 ```lua
 require('pdfview').setup {
   -- Buffer-local keys in PDF buffers; set any of them to false to skip it.
+  -- A list maps several keys to the same action.
   keys = {
     prefix = '<leader>p', next_annotation = ']a', prev_annotation = '[a', leap = nil,
+    next_page = { ']p', '<PageDown>' }, prev_page = { '[p', '<PageUp>' },
     hover = 'K', undo = 'u', redo = '<C-r>',
   },
   -- leap = nil: use keys mapped to <Plug>(leap); a string sets a key; false disables it.
@@ -99,6 +103,7 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `K` | n | Preview the note under the cursor; press again to focus the preview |
 | `u` / `<C-r>` | n | Undo / redo annotation changes (takes a count) |
 | `]a` / `[a` | n | Next / previous annotation (takes a count) |
+| `]p` / `[p`, `<PageDown>` / `<PageUp>` | n, x | Next / previous page: the page from its top, cursor on its first line (takes a count) |
 
 `K` uses Neovim's hover-style Markdown preview, without requiring an LSP server.
 Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q` or
