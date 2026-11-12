@@ -93,7 +93,7 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | --- | --- | --- |
 | `<leader>py` | n, x | Snapshot for an agent (see below) |
 | `<leader>pt` | n | Toggle full-window pages / text with page pane |
-| `<leader>pp` | n | Pager mode (full-window page view; see below) |
+| `<leader>pp` | n | Pager mode, in the full-window page view (see below) |
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
@@ -134,7 +134,7 @@ screen rectangle. Use `v` or `V` for selection; mouse dragging is not used in pa
 
 ### Pager mode
 
-`<leader>pp` turns the page view into a pager, like `less` or Vimium: keys pan the
+`<leader>pp` turns the page view into a pager (switching from split mode first), like `less` or Vimium: keys pan the
 pages, the cursor is not drawn, and the badge reads `PAGER` with the page in the middle
 of the view. The cursor still follows the view, so leaving resumes where you stopped.
 

@@ -352,18 +352,24 @@ end
 --- hidden float on the same buffer.
 local function cover(buf, host)
   local st = states[buf]
-  if covered(st) and st.host == host then return end
-  uncover(st)
-  close_pane(st)
-  local pbuf = new_pane_buf()
-  local pwin = api.nvim_open_win(pbuf, false, vim.tbl_extend('force', pane_float(host), { style = 'minimal', noautocmd = true }))
-  set_pane_options(pwin)
-  -- Opened from the host so it inherits the host's window options and jumplist.
-  local focus = api.nvim_win_call(host, function() return api.nvim_open_win(buf, false, vim.tbl_extend('force', focus_float(host), { noautocmd = true })) end)
-  api.nvim_win_set_cursor(focus, api.nvim_win_get_cursor(host))
-  st.pane, st.host, st.focus, st.host_winhl = { win = pwin, buf = pbuf }, host, focus, vim.wo[host][0].winhighlight
-  if api.nvim_get_current_win() == host then api.nvim_set_current_win(focus) end
-  host_active(st, api.nvim_get_current_win() == focus)
+  if not (covered(st) and st.host == host) then
+    uncover(st)
+    close_pane(st)
+    local pbuf = new_pane_buf()
+    local pwin = api.nvim_open_win(pbuf, false, vim.tbl_extend('force', pane_float(host), { style = 'minimal', noautocmd = true }))
+    set_pane_options(pwin)
+    -- Opened from the host so it inherits the host's window options and jumplist.
+    local focus = api.nvim_win_call(host, function() return api.nvim_open_win(buf, false, vim.tbl_extend('force', focus_float(host), { noautocmd = true })) end)
+    api.nvim_win_set_cursor(focus, api.nvim_win_get_cursor(host))
+    st.pane, st.host, st.focus, st.host_winhl = { win = pwin, buf = pbuf }, host, focus, vim.wo[host][0].winhighlight
+  end
+  -- Also when already covered: at startup, Neovim returns to the first window
+  -- without autocommands after the PDF has been covered.
+  if api.nvim_get_current_win() == host then
+    api.nvim_win_set_cursor(st.focus, api.nvim_win_get_cursor(host))
+    api.nvim_set_current_win(st.focus)
+  end
+  host_active(st, api.nvim_get_current_win() == st.focus)
 end
 
 --- The normal window showing `buf` that the page view belongs to, if any.
@@ -840,6 +846,7 @@ end
 local function enter_pager(buf)
   local st = states[buf]
   if st.pager then return end
+  if st.mode ~= 'page' then toggle(buf) end
   if not (covered(st) and st.top and api.nvim_get_current_win() == st.focus) then
     return notify('Pager mode needs the full-window page view', vim.log.levels.WARN)
   end
@@ -966,11 +973,13 @@ local function leap_targets(buf, win)
     c = vim.fn.tolower(c)
     return class[c] or c
   end
+  -- Empty lists, never nil: leap evaluates `targets() or targets`, so nil would
+  -- hand it the function itself. It also drops the message (shows "no targets").
   return function()
     local in1 = vim.fn.getcharstr()
-    if in1 == '\27' then return nil, '' end
+    if in1 == '\27' then return {}, '' end
     local in2 = vim.fn.getcharstr()
-    if in2 == '\27' then return nil, '' end
+    if in2 == '\27' then return {}, '' end
     local c1, c2 = norm(in1), norm(in2)
     local v = st.view
     local cur = api.nvim_win_get_cursor(win)
@@ -986,11 +995,11 @@ local function leap_targets(buf, win)
         end
       end
     end
-    if #targets == 0 then return nil, 'not found: ' .. in1 .. in2 end
+    if #targets == 0 then return {}, 'not found: ' .. in1 .. in2 end
     local info = st.info[cur[1]]
     if not info[4] then chars[#chars + 1] = { cur[1], char_index(st.lines[cur[1]], cur[2]) } end
     local boxes = try_call('char_boxes', { key = buf, chars = chars })
-    if not boxes then return nil, '' end
+    if not boxes then return {}, '' end
     local L = v.layout
     local function point(page, box)
       local i = page + 1

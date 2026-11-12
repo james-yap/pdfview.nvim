@@ -133,8 +133,9 @@ step('split toggle exposes text', function() toggle_cursor = cursor(); keys(' pt
     assert(api.nvim_win_get_config(st().pane.win).relative == '')
     assert(vim.deep_equal(cursor(), toggle_cursor))
   end)
-step('toggle back hides text', function() keys(' pt') end,
-  function() return ready() and st().mode == 'page' and st().focus == api.nvim_get_current_win() end)
+step('pager from split view returns to the page view', function() keys(' pp') end,
+  function() return ready() and st().mode == 'page' and st().pager and st().focus == api.nvim_get_current_win() end)
+step('leave pager mode', function() keys('q') end, function() return ready() and not st().pager end)
 step('incremental search renders native match', function() keys('/left 30') end,
   function() return ready() and vim.fn.getcmdtype() == '/' and vim.fn.getline('.'):find('left 30', 1, true) end)
 step('accept search', function() keys('<CR>') end,
