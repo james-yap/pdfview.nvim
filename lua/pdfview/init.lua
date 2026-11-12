@@ -22,7 +22,7 @@ local HELPER = vim.fs.joinpath(ROOT, 'python', 'helper.py')
 local NS = api.nvim_create_namespace 'pdfview'
 local GROUP = api.nvim_create_augroup('pdfview', { clear = true })
 -- Tints for the page view / snapshot (multiplied over the page, so ink stays dark).
-local COLORS = { cursor = 0xDDEBFF, cursor_char = 0x8AB8FF, selection = 0xA8D1FF, search = 0xFFE07A }
+local COLORS = { cursor = 0xDDEBFF, cursor_char = 0x8AB8FF, selection = 0xA8D1FF, search = 0xFFE07A, cur_search = 0xFF9F43 }
 local HL = { Highlight = 'PdfViewHighlight', Underline = 'PdfViewUnderline', StrikeOut = 'PdfViewStrikeOut', Squiggly = 'PdfViewSquiggly' }
 local NOTE_TYPES = { Text = true, FreeText = true }
 
@@ -435,29 +435,35 @@ local function update_badge(st, view)
 end
 
 --- Matches of the search being typed (incsearch) or of the last search (while
---- 'hlsearch' shows it) on the lines `visible`, as helper ranges.
-local function search_ranges(buf, visible)
+--- 'hlsearch' shows it) on the lines `visible`, as helper ranges: the match under
+--- the cursor (like CurSearch, so it stands out in pager mode too), and the rest.
+local function search_ranges(buf, visible, lnum, col)
   local st = states[buf]
   local pattern = st.incsearch
   if not pattern and vim.o.hlsearch and vim.v.hlsearch == 1 then pattern = vim.fn.getreg '/' end
-  if not pattern or pattern == '' or #visible == 0 then return nil end
+  if not pattern or pattern == '' or #visible == 0 then return nil, nil end
   -- matchbufline ignores 'smartcase' and assumes 'magic'; honour search options.
   local ic = vim.o.ignorecase and not (vim.o.smartcase and vim.fn.match(pattern, [[\u]]) >= 0)
   pattern = (ic and [[\c]] or [[\C]]) .. (vim.o.magic and [[\m]] or [[\M]]) .. pattern
   local ok, matches = pcall(vim.fn.matchbufline, buf, pattern, visible[1], visible[#visible])
-  if not ok then return nil end
+  if not ok then return nil, nil end
   local shown = {}
   for _, lnum in ipairs(visible) do
     shown[lnum] = true
   end
-  local ranges = {}
+  local ranges, current = {}, nil
   for _, m in ipairs(matches) do
     if shown[m.lnum] and m.text ~= '' then
       local text = st.lines[m.lnum]
-      ranges[#ranges + 1] = { m.lnum, char_index(text, m.byteidx), char_index(text, m.byteidx + #m.text) - 1 }
+      local range = { m.lnum, char_index(text, m.byteidx), char_index(text, m.byteidx + #m.text) - 1 }
+      if m.lnum == lnum and col >= m.byteidx and col < m.byteidx + #m.text then
+        current = { range }
+      else
+        ranges[#ranges + 1] = range
+      end
     end
   end
-  return #ranges > 0 and ranges or nil
+  return #ranges > 0 and ranges or nil, current
 end
 
 --- Tints for the view: search matches, then the selection (visual mode in the
@@ -468,9 +474,10 @@ local function marks_for(buf, view)
   local win = st.focus
   local visible = lines_in(st, view.layout, view.top, view.height)
   local marks = {}
-  local found = search_ranges(buf, visible)
-  if found then marks[#marks + 1] = { ranges = found, color = COLORS.search } end
   local lnum, col = unpack(api.nvim_win_get_cursor(win))
+  local found, current = search_ranges(buf, visible, lnum, col)
+  if found then marks[#marks + 1] = { ranges = found, color = COLORS.search } end
+  if current then marks[#marks + 1] = { ranges = current, color = COLORS.cur_search } end
   local ranges = win == api.nvim_get_current_win() and selection(buf)
   if ranges then
     local shown = {}
@@ -714,6 +721,8 @@ end
 -- Pager mode: like less or Vimium, keys pan the pages and the cursor is not
 -- drawn (it still follows the view, so leaving resumes there). The pager keys
 -- stand in for the buffer's own mappings of the same keys until it ends.
+-- <Space> is left alone: it is the usual <leader>, and which-key's buffer-local
+-- trigger on it is not there to save while which-key runs <leader>pp.
 
 --- { keys, action(st), description } for pager mode in `buf`.
 local function pager_keys(buf)
@@ -726,7 +735,7 @@ local function pager_keys(buf)
     { { 'k', '<Up>' }, function() scroll_by(buf, -step()) end, 'pan up' },
     { { 'd' }, function(st) scroll_by(buf, half(st)) end, 'pan down half a screen' },
     { { 'u' }, function(st) scroll_by(buf, -half(st)) end, 'pan up half a screen' },
-    { { 'f', '<Space>' }, function(st) scroll_by(buf, screen(st)) end, 'pan down a screen' },
+    { { 'f' }, function(st) scroll_by(buf, screen(st)) end, 'pan down a screen' },
     { { 'b' }, function(st) scroll_by(buf, -screen(st)) end, 'pan up a screen' },
     { { 'gg' }, function(st) scroll_by(buf, -st.top) end, 'pan to the start' },
     { { 'G' }, function(st) scroll_by(buf, st.layout.total) end, 'pan to the end' },

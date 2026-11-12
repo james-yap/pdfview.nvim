@@ -472,7 +472,7 @@ def render_clip(d, pno, clip, width, marks):
 
 
 GAP_COLOR = (48, 48, 48)
-SCROLLBAR = {"track": (224, 224, 224), "tick": (160, 160, 160), "thumb": (80, 80, 80)}
+SCROLLBAR = {"track": (224, 224, 224), "tick": (96, 96, 96), "thumb": (80, 80, 80), "thumb_tick": (240, 240, 240)}
 
 
 def page_heights(d, width):
@@ -529,16 +529,20 @@ def scrollbar(pix, d, top, gap, width):
             offset += stride
 
     bar(0, h, SCROLLBAR["track"])
-    # Ticks closer than 3px would merge into a solid band; skip them.
-    if h * min(heights) / total >= 3:
-        y = 0
-        for height in heights[:-1]:
-            y += height + gap
-            tick = round(h * y / total)
-            bar(tick, tick + 1, SCROLLBAR["tick"])
     y0 = min(round(h * top / total), h - 6)
     y1 = min(max(y0 + 6, round(h * (top + h) / total)), h)
     bar(y0, y1, SCROLLBAR["thumb"], inset=2)
+    # Ticks go over the thumb too, in a light colour there, so the boundaries of
+    # the pages in view stay visible. Ticks closer than 3 thicknesses would merge
+    # into a band; skip them.
+    thick = max(2, round(width / 12))
+    if h * min(heights) / total >= 3 * thick:
+        y = 0
+        for height in heights[:-1]:
+            y += height + gap
+            mid = round(h * y / total)
+            on_thumb = y0 <= mid < y1
+            bar(mid - thick // 2, mid - thick // 2 + thick, SCROLLBAR["thumb_tick" if on_thumb else "tick"], inset=2 if on_thumb else 0)
 
 
 def m_open(p):

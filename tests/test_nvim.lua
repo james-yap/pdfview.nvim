@@ -128,8 +128,14 @@ step('terminal focus gained restores filled cursor', function() api.nvim_exec_au
   function() return ready() and filled() end)
 step('incremental search renders native match', function() keys('/left 30') end,
   function() return ready() and vim.fn.getcmdtype() == '/' and vim.fn.getline('.'):find('left 30', 1, true) end)
-step('accept search', function() keys('<CR>') end,
-  function() return ready() and vim.fn.getcmdtype() == '' end)
+step('accept search tints the match under the cursor apart from the rest', function() keys('<CR>') end,
+  function() return ready() and vim.fn.getcmdtype() == '' end, function()
+    local colors = {}
+    for _, m in ipairs(vim.json.decode(st().render_key)[4]) do
+      colors[m.color] = (colors[m.color] or 0) + #m.ranges
+    end
+    assert(colors[0xFF9F43] == 1, vim.inspect(colors))
+  end)
 local before_click
 step('click another character on the page', function()
   before_click = cursor()

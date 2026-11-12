@@ -8,9 +8,9 @@ continuous scrolling. The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks,
 visual mode and yanking still operate on real buffer text. The view follows the
 cursor, tints its line or visual selection, and marks the character under the cursor.
 The cursor becomes hollow when you leave the PDF window or the terminal loses focus.
-A document-wide scrollbar at the right edge marks page boundaries, and a badge beside
-its bottom end shows the page in the middle of the view and the page count
-(highlight `PdfViewPage`, linked to `StatusLine`).
+A document-wide scrollbar at the right edge marks page boundaries (light marks on the
+thumb), and a badge beside its bottom end shows the page in the middle of the view
+and the page count (highlight `PdfViewPage`, linked to `StatusLine`).
 
 To read the extracted text (reading order, what a yank copies), `:split` the PDF
 window: other windows on the buffer show its text as usual.
@@ -120,7 +120,8 @@ on the buffer they keep their native behaviour:
 | Left click | Move to the character you clicked |
 
 Scrolling keeps the cursor in view where there is text. Search still covers the whole
-document; incremental and last-search matches are tinted on the rendered pages.
+document; incremental and last-search matches are tinted on the rendered pages, the
+match under the cursor in orange so `n`/`N` stand out in pager mode too.
 Selections and yanks use the extracted text's reading order, not a two-dimensional
 screen rectangle. Use `v` or `V` for selection; mouse dragging is not used.
 
@@ -134,7 +135,7 @@ the view, so leaving resumes where you stopped.
 | --- | --- |
 | `j` / `k`, `<Down>` / `<Up>`, `<CR>` | Pan down / up three rows (takes a count) |
 | `d` / `u`, `<C-d>` / `<C-u>` | Pan half a view; an explicit count pans that many rows |
-| `f` / `b`, `<Space>`, `<C-f>` / `<C-b>` | Pan down / up a view with two rows of overlap (takes a count) |
+| `f` / `b`, `<C-f>` / `<C-b>` | Pan down / up a view with two rows of overlap (takes a count) |
 | `gg` / `G` | Pan to the start / end |
 | `q` / `<Esc>` | Leave pager mode |
 

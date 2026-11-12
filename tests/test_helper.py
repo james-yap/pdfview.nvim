@@ -71,10 +71,12 @@ class PageViewTest(unittest.TestCase):
         self.assertEqual(pix.pixel(387, 119), (0, 0, 255))
         self.assertEqual(pix.pixel(399, 0), helper.SCROLLBAR["track"])
         self.assertEqual(pix.pixel(399, 119), helper.SCROLLBAR["track"])
-        # Page 2 starts at 610/2020 of the document; the thumb is inset.
-        self.assertEqual(pix.pixel(388, 36), helper.SCROLLBAR["tick"])
-        self.assertEqual(pix.pixel(390, 36), helper.SCROLLBAR["thumb"])
-        self.assertEqual(pix.pixel(389, 35), helper.SCROLLBAR["track"])
+        # Page 2 starts at 610/2020 of the document, inside the inset thumb
+        # (rows 34-40): its tick is drawn over the thumb in the light colour.
+        self.assertEqual(pix.pixel(390, 36), helper.SCROLLBAR["thumb_tick"])
+        self.assertEqual(pix.pixel(388, 36), helper.SCROLLBAR["track"])
+        self.assertEqual(pix.pixel(390, 34), helper.SCROLLBAR["thumb"])
+        self.assertEqual(pix.pixel(389, 33), helper.SCROLLBAR["track"])
 
     def test_hit_returns_character_index_and_empty_page_has_no_hit(self):
         helper.docs[1] = self.d
