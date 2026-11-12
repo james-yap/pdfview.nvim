@@ -129,8 +129,8 @@ screen rectangle. Use `v` or `V` for selection; mouse dragging is not used.
 
 ### Pager and cursor mode
 
-PDFs open in pager mode. The cursor is not drawn but still follows the view, so
-cursor mode starts where you stopped reading. In pager mode:
+PDFs open in pager mode. The cursor is not drawn but stays on the top line in view, so
+cursor mode starts where you are reading. In pager mode:
 
 | Key | Action |
 | --- | --- |
@@ -139,10 +139,15 @@ cursor mode starts where you stopped reading. In pager mode:
 | `gg` / `G` | Pan to the start / end |
 | `c` | Cursor mode |
 
-`v` / `V` / `<C-v>`, a click on a page and a leap jump also enter cursor mode.
-`<Esc>` in normal mode returns to pager mode (it ends a selection first); your own
-`<Esc>` mapping, such as `:nohlsearch`, still runs. In cursor mode the pager keys do
-what they do in Vim, and `u` undoes annotation changes.
+`v` / `V` / `<C-v>`, a click on a page and leap (as soon as it starts) also enter
+cursor mode. `<Esc>` in normal mode returns to pager mode (it ends a selection first,
+and cancelling a leap with it returns too); your own `<Esc>` mapping, such as
+`:nohlsearch`, still runs. In cursor mode the pager keys do what they do in Vim, and
+`u` undoes annotation changes.
+
+Marks (`m`) and jumps remember the page view: `'a`, `` `a ``, `''`, `<C-o>` and `<C-i>`
+return to the exact view a mark was set or a jump left from, when the target is out of
+view. Other moves scroll just enough to show the cursor.
 
 ## Annotations and saving
 
