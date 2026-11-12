@@ -9,11 +9,11 @@ visual mode and yanking still operate on real buffer text. The view follows the
 cursor, tints its line or visual selection, and marks the character under the cursor.
 The cursor becomes hollow when you leave the PDF window or the terminal loses focus.
 A document-wide scrollbar at the right edge marks page boundaries, and a badge beside
-its bottom end shows the cursor's page and the page count (highlight `PdfViewPage`,
-linked to `StatusLine`).
+its bottom end shows the page in the middle of the view and the page count
+(highlight `PdfViewPage`, linked to `StatusLine`).
 
-`<leader>pt` toggles the extracted text alongside the pages, useful for inspecting
-reading order or checking what a yank copies. Neither layout greys out page content.
+To read the extracted text (reading order, what a yank copies), `:split` the PDF
+window: other windows on the buffer show its text as usual.
 
 With [leap.nvim](https://codeberg.org/andyg/leap.nvim), pdfview supplies targets for
 everything visible on the rendered pages, including text outside the hidden text
@@ -37,9 +37,8 @@ other PDF viewers show them too.
   `uv run --script`; on first use uv installs Python and
   [PyMuPDF](https://pymupdf.readthedocs.io/) into an isolated, cached environment (this
   can take a few seconds, once).
-- For the page pane: [kitty](https://sw.kovidgoyal.net/kitty/) or
-  [Ghostty](https://ghostty.org/), with `'termguicolors'` on. Elsewhere (including inside
-  tmux) the text buffer, annotations and snapshots still work, just without the pane.
+- [kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/), with
+  `'termguicolors'` on. Elsewhere (including inside tmux) PDFs are not opened.
 - For copying snapshots to the clipboard: macOS. On other systems the snapshot is saved and
   its path is shown.
 
@@ -74,12 +73,6 @@ require('pdfview').setup {
     hover = 'K', undo = 'u', redo = '<C-r>',
   },
   -- leap = nil: use keys mapped to <Plug>(leap); a string sets a key; false disables it.
-  -- 'page': full-window rendered pages with hidden text. 'split': text + page pane.
-  view = 'page',
-  -- Split mode pane width: a fraction (< 1) of the columns it shares with the text window, or a
-  -- number of columns. Reapplied when the terminal is resized (including font zoom);
-  -- resizing by hand (<C-w><, :vertical resize, dragging the separator) sticks otherwise.
-  pane_width = 0.6,
   -- Where snapshots are written. nil: $TMPDIR/pdfview.
   snapshot_dir = nil,
 }
@@ -92,8 +85,7 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | Key | Mode | Action |
 | --- | --- | --- |
 | `<leader>py` | n, x | Snapshot for an agent (see below) |
-| `<leader>pt` | n | Toggle full-window pages / text with page pane |
-| `<leader>pp` | n | Pager mode, in the full-window page view (see below) |
+| `<leader>pp` | n | Pager mode (see below) |
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
@@ -104,7 +96,6 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `K` | n | Preview the note under the cursor; press again to focus the preview |
 | `u` / `<C-r>` | n | Undo / redo annotation changes (takes a count) |
 | `]a` / `[a` | n | Next / previous annotation (takes a count) |
-| `]p` / `[p`, `<PageDown>` / `<PageUp>` | n, x | Next / previous page: the page from its top, cursor on its first line (takes a count) |
 
 `K` uses Neovim's hover-style Markdown preview, without requiring an LSP server.
 Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q` or
@@ -114,8 +105,8 @@ Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q`
 PDF, and `q` saves and closes. Text editing inside this window uses its own normal
 Neovim undo history.
 
-In full-window page mode these keys operate on the rendered view (in normal and visual
-mode); in split mode they retain their native text-window behaviour:
+These keys operate on the rendered view (in normal and visual mode); in other windows
+on the buffer they keep their native behaviour:
 
 | Key | Action |
 | --- | --- |
@@ -125,18 +116,19 @@ mode); in split mode they retain their native text-window behaviour:
 | Mouse wheel | Scroll the pages |
 | `zt` / `zz` / `zb` | Put the cursor line near the top / middle / bottom |
 | `H` / `M` / `L` | Move to a line near the top / middle / bottom |
+| `]p` / `[p`, `<PageDown>` / `<PageUp>` | Scroll to the top of the next / previous page; `[p` inside a page goes to its top first (takes a count) |
 | Left click | Move to the character you clicked |
 
 Scrolling keeps the cursor in view where there is text. Search still covers the whole
 document; incremental and last-search matches are tinted on the rendered pages.
 Selections and yanks use the extracted text's reading order, not a two-dimensional
-screen rectangle. Use `v` or `V` for selection; mouse dragging is not used in page mode.
+screen rectangle. Use `v` or `V` for selection; mouse dragging is not used.
 
 ### Pager mode
 
-`<leader>pp` turns the page view into a pager (switching from split mode first), like `less` or Vimium: keys pan the
-pages, the cursor is not drawn, and the badge reads `PAGER` with the page in the middle
-of the view. The cursor still follows the view, so leaving resumes where you stopped.
+`<leader>pp` turns the page view into a pager, like `less` or Vimium: keys pan the
+pages, the cursor is not drawn, and the badge reads `PAGER`. The cursor still follows
+the view, so leaving resumes where you stopped.
 
 | Key | Action |
 | --- | --- |
@@ -148,7 +140,7 @@ of the view. The cursor still follows the view, so leaving resumes where you sto
 
 Other keys keep working (`]p`, `/`, the mouse wheel, ...). The pager keys stand in
 for the buffer's own mappings of the same keys (such as `u` for annotation undo) until
-you leave; toggling to split mode also leaves.
+you leave.
 
 ## Annotations and saving
 
@@ -166,8 +158,8 @@ The PDF buffer behaves like a file you edit:
   modified again; returning to it clears the modified flag. Reloading starts fresh.
 - History is session-only: there is no on-disk annotation autosave or crash recovery.
 
-Statuslines must include `%m` to show the usual `[+]` for unsaved changes. In page
-mode the visible PDF window is technically inactive because a hidden float holds
+Statuslines must include `%m` to show the usual `[+]` for unsaved changes. The
+visible PDF window is technically inactive because a hidden float holds
 keyboard focus. If using `mini.statusline`, include `%m` in its inactive content:
 
 ```lua
@@ -206,27 +198,26 @@ carries what the image cannot show, such as where the page lives on disk and the
   page regions, edits annotations and builds snapshots. Neovim talks to one helper process
   per session over JSON lines. View backgrounds use native bulk fills and the scrollbar
   uses whole scanline writes, avoiding Python per-pixel loops on navigation updates.
-- In page mode a non-focusable image float covers the normal PDF window. A second,
+- A non-focusable image float covers the normal PDF window. A second,
   hidden float on the text buffer holds focus and inherits the window's jumplist and
   alternate file. Vim handles ordinary text motions and operators; pdfview only maps
   view-specific controls. Buffer switches from the hidden float are handed back to the
   normal window; closing it closes the PDF window too.
-- The page pane uses the kitty graphics protocol with Unicode placeholders
+- The image uses the kitty graphics protocol with Unicode placeholders
   (`lua/pdfview/kitty.lua`): the image is drawn through placeholder characters in the pane
   buffer, so splits and floating windows cover it correctly. Rendered pages are handed to
   the terminal as temporary files, which the terminal deletes after reading.
 
-Filetypes: `pdfview` (text buffer), `pdfview_page` (pane). Highlight groups, all overridable:
-`PdfViewHighlight`, `PdfViewUnderline`, `PdfViewStrikeOut`, `PdfViewSquiggly`,
-`PdfViewNote`.
+Filetypes: `pdfview` (text buffer), `pdfview_page` (image float). Highlight groups, all
+overridable: `PdfViewHighlight`, `PdfViewUnderline`, `PdfViewStrikeOut`,
+`PdfViewSquiggly`, `PdfViewNote`, `PdfViewPage`.
 
 ## Limitations
 
 - The text order is the PDF's content order. Multi-column layouts and math can come out in
-  an awkward order; the page pane and snapshots show the real layout.
+  an awkward order; the rendered pages and snapshots show the real layout.
 - Scanned PDFs (no text layer), encrypted PDFs and rotated pages are not supported.
 - A selection (for annotations or snapshots) must stay on one page.
-- No tmux support for the page pane.
 - Search highlighting is line-local (multi-line patterns still navigate through native
   search). The text layer must contain the characters you want to search or jump to.
 - One rendered view is kept per PDF buffer; additional splits of that buffer can show

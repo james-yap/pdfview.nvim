@@ -218,7 +218,6 @@ local note_win, note_buf
 
 step('opens the hidden page view over the PDF window', function() end, ready, function()
   assert(api.nvim_win_get_config(cur()).hide, 'focus is not in the hidden window')
-  assert(st().mode == 'page')
   host_win = st().host
   assert(host_win and visible() == host_win)
   local lines = api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -254,7 +253,6 @@ end, function()
   return ready() and at_alpha() and shows > mark
 end, function()
   png.base = latest
-  png.columns = api.nvim_win_get_width(host_win)
   check_state(false)
 end)
 
@@ -341,20 +339,6 @@ change('<leader>pd deletes the imported highlight', ' pd', true, {
   end,
 })
 annotations('only the new highlight remains', { 'gamma' }, true)
-
-step('toggling to split keeps showing the flag', function() keys ' pt' end,
-  function() return ready() and st().mode == 'split' end, function() check_state(true) end)
-change('undo works with the text split visible', 'u', true)
-change('redo works with the text split visible', '<C-r>', true)
-step('toggling back keeps showing the flag', function() keys ' pt' end,
-  function() return ready() and st().mode == 'page' and st().focus == cur() end, function() check_state(true) end)
--- Neovim redistributes the split separator column on closing the text pane.
--- Compare appearances at the original pixel size, not two different zooms.
-step('restores the reference image geometry', function()
-  api.nvim_win_set_width(host_win, png.columns)
-end, function()
-  return ready() and api.nvim_win_get_width(st().pane.win) == png.columns and st().view.width == png.columns * kitty.cell_size().width
-end)
 
 change('3u undoes three annotation changes at once', '3u', true, {
   check = function()

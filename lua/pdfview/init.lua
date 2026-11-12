@@ -1,8 +1,8 @@
 -- pdfview.nvim: a read-only text buffer for vim motions (hjkl, /, leap,
--- visual) shown as the rendered pages: by default the pages cover the text
--- window and the text stays hidden (or, toggled, a page pane beside the text).
--- The view follows the cursor and tints the cursor line or visual selection.
--- Pages are drawn with the kitty graphics protocol (lua/pdfview/kitty.lua).
+-- visual) shown as the rendered pages: the pages cover the PDF's window and
+-- the text stays hidden. The view follows the cursor and tints the cursor line
+-- or visual selection. Pages are drawn with the kitty graphics protocol
+-- (lua/pdfview/kitty.lua); other terminals are refused.
 --
 -- Text, geometry and annotations live in python/helper.py (PyMuPDF, run
 -- through uv). Buffer lines are the helper's lines: one per PDF text line, in
@@ -43,12 +43,6 @@ M.config = {
     undo = 'u',
     redo = '<C-r>',
   },
-  -- 'page': the pages fill the PDF's window and the text is hidden; 'split': the
-  -- text window plus a page pane to its right. <prefix>t toggles per buffer.
-  view = 'page',
-  -- Split mode pane width: a fraction (< 1) of the columns it shares with the text window,
-  -- or a number of columns. Reapplied when the terminal is resized; <C-w> resizes otherwise stick.
-  pane_width = 0.6,
   -- Where snapshots are written. nil: $TMPDIR/pdfview.
   snapshot_dir = nil, ---@type string?
 }
@@ -210,14 +204,12 @@ end
 
 -- Page view ------------------------------------------------------------------
 --
--- The rendered pages are shown in one of two layouts (st.mode, toggled per buffer):
---   page:  a float (st.pane) covers the PDF buffer's window (st.host) and shows
---          the pages; focus sits in a hidden float on the same buffer (st.focus),
---          so the text and the terminal cursor are invisible while every key
---          still drives the text buffer.
---   split: the text window plus a page pane split to its right.
--- Either way the image is a cut of all pages stacked at the pane's width
--- ("doc pixels"), from st.top down, panned to follow the cursor.
+-- A float (st.pane) covers the PDF buffer's window (st.host) and shows the
+-- pages; focus sits in a hidden float on the same buffer (st.focus), so the
+-- text and the terminal cursor are invisible while every key still drives the
+-- text buffer. Other windows on the buffer show its text as usual.
+-- The image is a cut of all pages stacked at the pane's width ("doc pixels"),
+-- from st.top down, panned to follow the hidden float's cursor.
 
 local function pane_valid(st) return st.pane ~= nil and api.nvim_win_is_valid(st.pane.win) end
 
@@ -229,11 +221,7 @@ end
 local function close_pane(st)
   if st.image then kitty.delete(st.image) end
   close_badge(st)
-  -- After :bd the pane can be the last window; it cannot close, so it shows an empty buffer.
-  if pane_valid(st) and not pcall(api.nvim_win_close, st.pane.win, true) then
-    vim.wo[st.pane.win].winfixbuf = false
-    api.nvim_win_call(st.pane.win, vim.cmd.enew)
-  end
+  if pane_valid(st) then pcall(api.nvim_win_close, st.pane.win, true) end
   st.pane, st.image, st.grid, st.view, st.render_key = nil, nil, nil, nil, nil
 end
 
@@ -269,70 +257,12 @@ local function uncover(st)
   end
 end
 
-local unsupported_reported = false
-
-local function can_show()
-  local ok, reason = kitty.supported()
-  if ok and not kitty.cell_size() then
-    ok, reason = false, 'the terminal does not report its size in pixels'
-  end
-  if not ok and not unsupported_reported then
-    unsupported_reported = true
-    notify('No page view: ' .. reason, vim.log.levels.WARN)
-  end
-  return ok
-end
-
 local function new_pane_buf()
   local pbuf = api.nvim_create_buf(false, true)
   vim.bo[pbuf].bufhidden = 'wipe'
   vim.bo[pbuf].filetype = 'pdfview_page'
   vim.bo[pbuf].modifiable = false
   return pbuf
-end
-
--- :setlocal, so a buffer that later replaces the pane gets normal window options.
-local PANE_OPTIONS = {
-  number = false,
-  relativenumber = false,
-  signcolumn = 'no',
-  cursorline = false,
-  cursorcolumn = false,
-  colorcolumn = '',
-  foldcolumn = '0',
-  statuscolumn = '',
-  list = false,
-  spell = false,
-  wrap = false,
-  winfixbuf = true,
-}
-
-local function set_pane_options(win)
-  for option, value in pairs(PANE_OPTIONS) do
-    vim.wo[win][0][option] = value
-  end
-end
-
-local MIN_TEXT_WIDTH = 20
-
---- Pane columns out of `total`, the columns the text window and pane share (separator excluded).
-local function pane_columns(total)
-  local w = M.config.pane_width
-  local cols = w < 1 and math.floor(total * w + 0.5) or math.floor(w)
-  return math.max(1, math.min(cols, total - MIN_TEXT_WIDTH))
-end
-
---- Split mode: a page pane to the right of the text window `win`.
-local function open_pane(buf, win)
-  local st = states[buf]
-  if pane_valid(st) then return end
-  local pbuf = new_pane_buf()
-  local width = pane_columns(api.nvim_win_get_width(win) - 1)
-  local pwin = api.nvim_open_win(pbuf, false, { split = 'right', win = win, width = width })
-  set_pane_options(pwin)
-  -- Keep the configured width through <C-w>= and other windows opening or closing.
-  vim.wo[pwin][0].winfixwidth = true
-  st.pane = { win = pwin, buf = pbuf }
 end
 
 --- Float config of the page image over `host`: below other floats (completion,
@@ -348,8 +278,8 @@ local function focus_float(host)
   return { relative = 'win', win = host, row = 0, col = 0, width = w, height = h, hide = true }
 end
 
---- Page mode: cover the text window `host` with the pages and move focus into a
---- hidden float on the same buffer.
+--- Cover the text window `host` with the pages and move focus into a hidden
+--- float on the same buffer.
 local function cover(buf, host)
   local st = states[buf]
   if not (covered(st) and st.host == host) then
@@ -357,7 +287,7 @@ local function cover(buf, host)
     close_pane(st)
     local pbuf = new_pane_buf()
     local pwin = api.nvim_open_win(pbuf, false, vim.tbl_extend('force', pane_float(host), { style = 'minimal', noautocmd = true }))
-    set_pane_options(pwin)
+    vim.wo[pwin][0].wrap = false
     -- Opened from the host so it inherits the host's window options and jumplist.
     local focus = api.nvim_win_call(host, function() return api.nvim_open_win(buf, false, vim.tbl_extend('force', focus_float(host), { noautocmd = true })) end)
     api.nvim_win_set_cursor(focus, api.nvim_win_get_cursor(host))
@@ -380,23 +310,6 @@ local function text_window(buf)
   if api.nvim_win_get_buf(cur) == buf and not is_float(cur) then return cur end
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
     if not is_float(win) then return win end
-  end
-end
-
---- The window whose cursor the page view follows.
-local function cursor_window(buf)
-  local st = states[buf]
-  return covered(st) and st.focus or text_window(buf)
-end
-
---- Show the pages for `buf` around its text window `win`, in the buffer's mode.
-local function attach(buf, win)
-  local st = states[buf]
-  if not can_show() then return end
-  if st.mode == 'page' then
-    cover(buf, win)
-  else
-    open_pane(buf, win)
   end
 end
 
@@ -459,14 +372,13 @@ local function scrollbar_width(width) return math.max(12, math.floor(width / 60)
 --- The view for the pane's current size: st.top, moved only when the cursor
 --- line changes or the pane resizes.
 --- The image is rendered at exactly cols x rows cells of terminal pixels.
-local function view_for(buf, win)
-  local st = states[buf]
+local function view_for(st)
   local cell = assert(kitty.cell_size())
   local cols = math.min(api.nvim_win_get_width(st.pane.win), kitty.max_cells)
   local rows = math.min(api.nvim_win_get_height(st.pane.win), kitty.max_cells)
   local width, height = math.floor(cols * cell.width), math.floor(rows * cell.height)
   local L = layout(st, width, math.floor(cell.height / 2))
-  local lnum = api.nvim_win_get_cursor(win)[1]
+  local lnum = api.nvim_win_get_cursor(st.focus)[1]
   local a, b = line_span(st, L, lnum)
   local top = st.top
   if not top or st.top_width ~= width then
@@ -490,11 +402,10 @@ local function page_at(L, y)
 end
 
 --- The "page/pages" badge in the pane's bottom-right corner, left of the
---- scrollbar: the page holding the cursor of `win`, or in pager mode, where
---- the cursor is not drawn, the page in the middle of the view.
-local function update_badge(st, win, view)
-  local text = st.pager and (' PAGER %d/%d '):format(page_at(view.layout, view.top + view.height / 2), #st.pages)
-    or (' %d/%d '):format(st.info[api.nvim_win_get_cursor(win)[1]][1] + 1, #st.pages)
+--- scrollbar, for the page in the middle of the view.
+local function update_badge(st, view)
+  local page = page_at(view.layout, view.top + view.height / 2)
+  local text = (st.pager and ' PAGER %d/%d ' or ' %d/%d '):format(page, #st.pages)
   local width = #text
   local config = {
     relative = 'win',
@@ -549,10 +460,12 @@ local function search_ranges(buf, visible)
   return #ranges > 0 and ranges or nil
 end
 
---- Tints for the view: search matches, then the selection (visual mode in `win`)
---- or else the cursor line, then the character under the cursor (neither in pager mode).
-local function marks_for(buf, win, view)
+--- Tints for the view: search matches, then the selection (visual mode in the
+--- hidden float) or else the cursor line, then the character under the cursor
+--- (neither in pager mode).
+local function marks_for(buf, view)
   local st = states[buf]
+  local win = st.focus
   local visible = lines_in(st, view.layout, view.top, view.height)
   local marks = {}
   local found = search_ranges(buf, visible)
@@ -601,18 +514,18 @@ end
 
 local render_id = 0
 
---- Render the pages for `buf`, following the cursor of `win`. At most one render
---- is in flight per buffer; requests arriving meanwhile collapse into one rerun.
-local function render(buf, win)
+--- Render the pages for `buf`, following the cursor of its hidden float. At most
+--- one render is in flight per buffer; requests arriving meanwhile collapse into one rerun.
+local function render(buf)
   local st = states[buf]
-  if not (st and win and pane_valid(st) and api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == buf) then return end
+  if not (st and covered(st) and pane_valid(st) and api.nvim_win_get_buf(st.focus) == buf) then return end
   if st.busy then
-    st.again = win
+    st.again = true
     return
   end
-  local view = view_for(buf, win)
-  update_badge(st, win, view)
-  local marks = marks_for(buf, win, view)
+  local view = view_for(st)
+  update_badge(st, view)
+  local marks = marks_for(buf, view)
   local key = vim.json.encode { view.top, view.width, view.height, marks, st.version }
   if key == st.render_key then return end
   st.view, st.render_key, st.busy = view, key, true
@@ -643,7 +556,7 @@ local function render(buf, win)
     end
     local again = st.again
     st.again = nil
-    if again and not err then render(buf, again) end
+    if again and not err then render(buf) end
   end)
 end
 
@@ -651,8 +564,8 @@ local function refresh(buf)
   vim.schedule(function()
     local win = states[buf] and text_window(buf)
     if not win then return end
-    attach(buf, win)
-    render(buf, cursor_window(buf))
+    cover(buf, win)
+    render(buf)
   end)
 end
 
@@ -670,20 +583,6 @@ local function leave_pager(buf)
       if map then vim.fn.mapset(map) end
     end
   end)
-end
-
---- Switch `buf` between page mode and split mode.
-local function toggle(buf)
-  local st = states[buf]
-  leave_pager(buf)
-  st.mode = st.mode == 'page' and 'split' or 'page'
-  local win = text_window(buf)
-  uncover(st)
-  close_pane(st)
-  if win then
-    attach(buf, win)
-    render(buf, cursor_window(buf))
-  end
 end
 
 --- A file opened in the hidden float (:e, :bnext, a picker, <C-o>) moves to the
@@ -727,8 +626,8 @@ local function close_host(buf, host)
   local ok, err = pcall(vim.cmd, #normal == 1 and 'confirm quit' or 'confirm close')
   if not ok then notify(err, vim.log.levels.ERROR) end
   if api.nvim_win_is_valid(host) and api.nvim_win_get_buf(host) == buf then
-    attach(buf, host)
-    render(buf, cursor_window(buf))
+    cover(buf, host)
+    render(buf)
   end
 end
 
@@ -742,7 +641,7 @@ local function cell_at(st, page, x, y)
   if row >= 0 and row < v.rows and col >= 0 and col < v.cols then return row, col end
 end
 
--- Scrolling and clicking in page mode -------------------------------------------
+-- Scrolling and clicking ---------------------------------------------------------
 
 --- Scroll the view by `delta` doc pixels. Like Vim, the cursor stays on screen:
 --- if it scrolled out, it moves to the first (scrolling down) or last line now in view.
@@ -766,7 +665,7 @@ local function scroll_by(buf, delta)
     if best then api.nvim_win_call(win, function() vim.fn.cursor(best, 0) end) end
   end
   st.follow_lnum = api.nvim_win_get_cursor(win)[1]
-  render(buf, win)
+  render(buf)
 end
 
 --- zt / zz / zb: put the cursor line at the top (0), middle (0.5) or bottom (1) of the view.
@@ -778,24 +677,19 @@ local function align(buf, where)
   local m = margin(height)
   local top = where == 0 and a - m or where == 1 and b - height + m or (a + b - height) / 2
   st.top, st.follow_lnum = clamp_top(L, height, top), lnum
-  render(buf, st.focus)
+  render(buf)
 end
 
---- ]p / [p: move the cursor to the first line of the page `count` pages after (dir 1)
---- or before (dir -1) the cursor's, and show that page from its top.
+--- ]p / [p: scroll so the page `count` pages after (dir 1) or before (dir -1)
+--- the one in the middle of the view starts at the top. [p first goes back to
+--- the top of that page when the view starts inside it.
 local function jump_page(buf, dir, count)
   local st = states[buf]
-  local win = api.nvim_get_current_win()
-  local page = st.info[api.nvim_win_get_cursor(win)[1]][1] + 1
+  local L = st.layout
+  local page = page_at(L, st.top + st.top_height / 2)
+  if dir < 0 and st.top > L.tops[page] then count = count - 1 end
   local target = math.max(1, math.min(#st.pages, page + dir * count))
-  local header = st.headers[target]
-  -- The page header when the page has no text.
-  local lnum = header + 1 < (st.headers[target + 1] or #st.lines + 1) and header + 1 or header
-  if st.layout and st.top_height and pane_valid(st) then
-    st.top, st.follow_lnum = clamp_top(st.layout, st.top_height, st.layout.tops[target]), lnum
-  end
-  api.nvim_win_set_cursor(win, { lnum, 0 })
-  render(buf, win)
+  scroll_by(buf, L.tops[target] - st.top)
 end
 
 --- H / M / L: move the cursor to the top (0), middle (0.5) or bottom (1) line in view.
@@ -836,9 +730,9 @@ local function pager_keys(buf)
     { { 'b' }, function(st) scroll_by(buf, -screen(st)) end, 'pan up a screen' },
     { { 'gg' }, function(st) scroll_by(buf, -st.top) end, 'pan to the start' },
     { { 'G' }, function(st) scroll_by(buf, st.layout.total) end, 'pan to the end' },
-    { { 'q', '<Esc>' }, function(st)
+    { { 'q', '<Esc>' }, function()
       leave_pager(buf)
-      render(buf, st.focus)
+      render(buf)
     end, 'leave pager mode' },
   }
 end
@@ -846,9 +740,8 @@ end
 local function enter_pager(buf)
   local st = states[buf]
   if st.pager then return end
-  if st.mode ~= 'page' then toggle(buf) end
   if not (covered(st) and st.top and api.nvim_get_current_win() == st.focus) then
-    return notify('Pager mode needs the full-window page view', vim.log.levels.WARN)
+    return notify('Pager mode works from the page view, not from other windows on the PDF', vim.log.levels.WARN)
   end
   st.pager = {}
   for _, k in ipairs(pager_keys(buf)) do
@@ -864,7 +757,7 @@ local function enter_pager(buf)
       end, { buffer = buf, desc = 'PDF pager: ' .. k[3] })
     end
   end
-  render(buf, st.focus)
+  render(buf)
 end
 
 --- Move the cursor to the character under a mouse click on the pages.
@@ -872,7 +765,7 @@ end
 local function click(buf)
   local st = states[buf]
   local pos = vim.fn.getmousepos()
-  if not (st and st.view and pane_valid(st) and (pos.winid == st.pane.win or (covered(st) and pos.winid == st.host))) then return false end
+  if not (st and st.view and covered(st) and pos.winid == st.host) then return false end
   local cell, v = kitty.cell_size(), st.view
   if pos.winrow < 1 or pos.winrow > v.rows or pos.wincol < 1 or pos.wincol > v.cols then return false end
   local L = v.layout
@@ -880,8 +773,7 @@ local function click(buf)
   local i = page_at(L, y)
   local s = L.scales[i]
   local hit = try_call('hit', { key = buf, page = i - 1, x = (pos.wincol - 0.5) * cell.width / s, y = (y - L.tops[i]) / s })
-  local win = cursor_window(buf)
-  if not win then return true end
+  local win = st.focus
   if vim.fn.mode():match '^[vV\22]' then vim.cmd 'normal! \27' end
   if api.nvim_get_current_win() ~= win then api.nvim_set_current_win(win) end
   local lnum = hit and hit[1] or st.headers[i]
@@ -1028,12 +920,12 @@ local function leap_targets(buf, win)
   end
 end
 
---- leap with the page view's targets; plain leap when there is no page view.
+--- leap with the page view's targets from the hidden float; plain leap elsewhere.
 local function leap_on_page(buf)
   local st = states[buf]
   local win = api.nvim_get_current_win()
   local kwargs = { windows = { win }, inclusive = true }
-  if st and st.view and pane_valid(st) then kwargs.targets = leap_targets(buf, win) end
+  if st and st.view and covered(st) and win == st.focus then kwargs.targets = leap_targets(buf, win) end
   require('leap').leap(kwargs)
 end
 
@@ -1097,7 +989,7 @@ local function apply(buf, res, from_history)
   vim.bo[st.history].modified = vim.bo[buf].modified
   st.version = st.version + 1
   decorate(buf)
-  render(buf, cursor_window(buf))
+  render(buf)
   vim.cmd.redrawstatus()
 end
 
@@ -1160,7 +1052,7 @@ local function hover_note(buf)
   })
   -- The hidden text cursor does not line up with the rendered glyph. Anchor the
   -- hover to that glyph on the page instead, keeping the whole float in view.
-  if covered(st) and pane_valid(st) and view then
+  if view and covered(st) and api.nvim_get_current_win() == st.focus then
     local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
     if not st.info[lnum][4] then
       local boxes = try_call('char_boxes', { key = buf, chars = { { lnum, char_index(st.lines[lnum], col) } } })
@@ -1295,24 +1187,17 @@ end
 
 -- Snapshot for agents --------------------------------------------------------
 
---- PNG of the visible stacked pages (the cursor's whole page without a view),
---- plus a caption with per-page clips, selection bounds and note texts.
+--- PNG of the visible stacked pages, plus a caption with per-page clips,
+--- selection bounds and note texts.
 local function snapshot(buf)
   local st, ranges = states[buf], selection(buf)
+  local v = st.view
+  if not v then return notify('No page view to snapshot', vim.log.levels.WARN) end
   if ranges and not ranges_page(st, ranges) then return notify('Selection must stay on one page', vim.log.levels.WARN) end
   if ranges then vim.cmd 'normal! \27' end
-  local v = st.view
-  local width, height, top, gap
-  if v then
-    width = math.max(v.width, 1600)
-    local scale = width / v.width
-    height, top, gap = math.floor(v.height * scale), v.top * scale, v.layout.gap * scale
-  else
-    width, gap = 1600, 0
-    local L = layout(st, width, gap)
-    local i = st.info[api.nvim_win_get_cursor(0)[1]][1] + 1
-    top, height = L.tops[i], math.ceil(L.heights[i])
-  end
+  local width = math.max(v.width, 1600)
+  local scale = width / v.width
+  local height, top, gap = math.floor(v.height * scale), v.top * scale, v.layout.gap * scale
   local dir = M.config.snapshot_dir or vim.fs.joinpath(kitty.tmpdir(), 'pdfview')
   vim.fn.mkdir(dir, 'p')
   local png = vim.fs.joinpath(dir, ('snap-%s-%03d.png'):format(os.date '%Y%m%d-%H%M%S', uv.now() % 1000))
@@ -1385,21 +1270,14 @@ local function setup_buffer(buf)
     local st, win = states[buf], api.nvim_get_current_win()
     -- The covered window's statusline shows its own cursor: keep it with the hidden float's.
     if st and covered(st) and win == st.focus then api.nvim_win_set_cursor(st.host, api.nvim_win_get_cursor(win)) end
-    render(buf, win)
+    render(buf)
   end)
   au('BufWinEnter', function() refresh(buf) end)
   au('BufWinLeave', function()
     vim.schedule(function()
       local st = states[buf]
-      if not st then return end
-      if st.host and not (covered(st) and api.nvim_win_get_buf(st.host) == buf) then uncover(st) end
-      if not text_window(buf) then close_pane(st) end
+      if st and st.host and not (covered(st) and api.nvim_win_get_buf(st.host) == buf) then uncover(st) end
     end)
-  end)
-  -- Split mode: close the pane first so :q in the last text window exits nvim.
-  au('QuitPre', function()
-    local st = states[buf]
-    if st and not covered(st) and #vim.fn.win_findbuf(buf) == 1 then close_pane(st) end
   end)
   au('BufWriteCmd', function(ev) write(buf, ev.match) end)
   -- :e! unloads and immediately re-reads the buffer; only tear down for real unloads.
@@ -1424,15 +1302,12 @@ local function setup_buffer(buf)
   map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')
-  map('n', prefixed 't', function() toggle(buf) end, 'toggle page view / text with page pane')
   map('n', prefixed 'p', function() enter_pager(buf) end, 'pager mode: keys pan the pages')
   map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
   map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
   map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
   map('n', keys.next_annotation, function() jump(buf, 1, vim.v.count1) end, 'next annotation')
   map('n', keys.prev_annotation, function() jump(buf, -1, vim.v.count1) end, 'previous annotation')
-  map({ 'n', 'x' }, keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
-  map({ 'n', 'x' }, keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
 
   if pcall(require, 'leap') then
     for _, k in ipairs(leap_keys()) do
@@ -1440,17 +1315,19 @@ local function setup_buffer(buf)
     end
   end
 
-  -- In page mode the text window is hidden, so scrolling, H/M/L and clicks act on
-  -- the pages. Elsewhere (split mode, other windows, the mouse over another
+  -- The text window is hidden, so scrolling, page jumps, H/M/L and clicks act on
+  -- the pages. Elsewhere (other windows on the buffer, the mouse over another
   -- window) the keys do what they always do.
   local function page_map(lhs, fn, desc, mouse)
-    map({ 'n', 'x' }, lhs, function()
-      local st = states[buf]
-      if st and covered(st) and st.top and api.nvim_get_current_win() == st.focus and (not mouse or vim.fn.getmousepos().winid == st.host) then
-        return fn(st)
-      end
-      api.nvim_feedkeys((vim.v.count > 0 and vim.v.count or '') .. vim.keycode(lhs), 'n', false)
-    end, desc)
+    for _, l in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
+      map({ 'n', 'x' }, l, function()
+        local st = states[buf]
+        if st and covered(st) and st.top and api.nvim_get_current_win() == st.focus and (not mouse or vim.fn.getmousepos().winid == st.host) then
+          return fn(st)
+        end
+        api.nvim_feedkeys((vim.v.count > 0 and vim.v.count or '') .. vim.keycode(l), 'n', false)
+      end, desc)
+    end
   end
   local function rows(n) return n * kitty.cell_size().height end
   page_map('<C-e>', function() scroll_by(buf, rows(vim.v.count1)) end, 'scroll the page down')
@@ -1467,6 +1344,8 @@ local function setup_buffer(buf)
   page_map('H', function() screen_line(buf, 0) end, 'cursor to the top line in view')
   page_map('M', function() screen_line(buf, 0.5) end, 'cursor to the middle line in view')
   page_map('L', function() screen_line(buf, 1) end, 'cursor to the bottom line in view')
+  page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
+  page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
   page_map('<LeftDrag>', function() end, 'ignore drags on the page', true)
   map({ 'n', 'x' }, '<LeftMouse>', function()
     if not click(buf) then api.nvim_feedkeys(vim.keycode '<LeftMouse>', 'n', false) end
@@ -1475,6 +1354,9 @@ end
 
 load = function(buf)
   local path = canonical(api.nvim_buf_get_name(buf))
+  local ok, reason = kitty.supported()
+  if ok and not kitty.cell_size() then ok, reason = false, 'the terminal does not report its size in pixels' end
+  if not ok then error('no page view: ' .. reason, 0) end
   -- :e! keeps the buffer's mappings, and setup_buffer sets the usual ones again.
   if states[buf] then leave_pager(buf) end
   local res = call('open', { key = buf, path = path })
@@ -1483,7 +1365,7 @@ load = function(buf)
   st.path, st.lines, st.info, st.pages, st.annots = path, res.lines, res.info, res.pages, res.annots
   reset_history(st, buf, res.state)
   st.stat, st.warned, st.version = stat_key(path), nil, (st.version or 0) + 1
-  st.mode, st.layout, st.headers = st.mode or M.config.view, nil, {}
+  st.layout, st.headers = nil, {}
   for lnum, info in ipairs(st.info) do
     if info[4] then st.headers[info[1] + 1] = lnum end
   end
@@ -1530,13 +1412,13 @@ function M.setup(opts)
     st.input_refresh_pending = true
     vim.schedule(function()
       st.input_refresh_pending = nil
-      if states[buf] == st and api.nvim_get_current_buf() == buf then render(buf, api.nvim_get_current_win()) end
+      if states[buf] == st and api.nvim_get_current_buf() == buf then render(buf) end
     end)
   end, NS)
   api.nvim_create_autocmd('ColorScheme', { group = GROUP, callback = set_hls })
   api.nvim_create_autocmd('BufReadCmd', {
     group = GROUP,
-    pattern = { '*.pdf', '*.PDF' },
+    pattern = '*.[pP][dD][fF]',
     callback = function(ev)
       local ok, err = pcall(load, ev.buf)
       if not ok then notify('Cannot open ' .. ev.match .. ': ' .. err, vim.log.levels.ERROR) end
@@ -1544,19 +1426,12 @@ function M.setup(opts)
   })
   api.nvim_create_autocmd({ 'WinResized', 'VimResized' }, {
     group = GROUP,
-    callback = function(ev)
+    callback = function()
       for buf, st in pairs(states) do
         if covered(st) then
           pcall(api.nvim_win_set_config, st.pane.win, pane_float(st.host))
           pcall(api.nvim_win_set_config, st.focus, focus_float(st.host))
-          render(buf, st.focus)
-        else
-          local win = text_window(buf)
-          if win and ev.event == 'VimResized' and pane_valid(st) then
-            local total = api.nvim_win_get_width(win) + api.nvim_win_get_width(st.pane.win)
-            api.nvim_win_set_width(st.pane.win, pane_columns(total))
-          end
-          if win then render(buf, win) end
+          render(buf)
         end
       end
     end,
@@ -1579,7 +1454,7 @@ function M.setup(opts)
             end)
           end
         end
-        render(buf, cursor_window(buf))
+        render(buf)
       end
     end,
   })
@@ -1588,7 +1463,7 @@ function M.setup(opts)
     callback = function(ev)
       editor_focused = ev.event == 'FocusGained'
       for buf in pairs(states) do
-        render(buf, cursor_window(buf))
+        render(buf)
       end
     end,
   })
@@ -1630,7 +1505,7 @@ function M.setup(opts)
       st.incsearch = vim.fn.getcmdline()
       -- Native incsearch updates the real cursor after CmdlineChanged returns.
       vim.schedule(function()
-        if states[buf] == st and api.nvim_get_current_buf() == buf then render(buf, api.nvim_get_current_win()) end
+        if states[buf] == st and api.nvim_get_current_buf() == buf then render(buf) end
       end)
     end,
   })
@@ -1644,8 +1519,7 @@ function M.setup(opts)
       st.incsearch = nil
       -- After the search has moved the cursor (or not, when cancelled).
       vim.schedule(function()
-        local win = states[buf] and cursor_window(buf)
-        if win then render(buf, win) end
+        render(buf)
       end)
     end,
   })
@@ -1667,7 +1541,7 @@ function M.setup(opts)
     pattern = 'LeapRedraw',
     callback = function()
       clear_labels()
-      render(api.nvim_get_current_buf(), api.nvim_get_current_win())
+      render(api.nvim_get_current_buf())
     end,
   })
   api.nvim_create_autocmd('User', {
@@ -1679,7 +1553,7 @@ function M.setup(opts)
       local st = states[buf]
       if st then
         st.leaping = nil
-        render(buf, api.nvim_get_current_win())
+        render(buf)
       end
     end,
   })

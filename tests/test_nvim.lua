@@ -103,11 +103,11 @@ step('next page shows the second page from its top', function() keys(']p') end,
     assert(st().top == math.floor(st().layout.tops[2]))
     assert(badge() == ' 2/2 ', badge())
   end)
-step('PageUp returns to the first line of the first page', function() keys('<PageUp>') end,
-  function() return ready() and cursor()[1] == 2 end, function()
-    assert(st().top == 0)
-    assert(badge() == ' 1/2 ', badge())
-  end)
+step('[p inside a page returns to its top', function() keys('3<C-e>[p') end,
+  function() return ready() and st().top == math.floor(st().layout.tops[2]) end,
+  function() assert(badge() == ' 2/2 ', badge()) end)
+step('PageUp at a page top goes to the previous page', function() keys('<PageUp>') end,
+  function() return ready() and st().top == 0 end, function() assert(badge() == ' 1/2 ', badge()) end)
 step('pager mode hides the cursor and labels the badge', function() keys(' pp') end,
   function() return ready() and st().pager and badge() == ' PAGER 1/2 ' end, function()
     for _, m in ipairs(vim.json.decode(st().render_key)[4]) do
@@ -126,16 +126,6 @@ step('terminal focus lost makes cursor hollow', function() api.nvim_exec_autocmd
   function() return ready() and outline() end)
 step('terminal focus gained restores filled cursor', function() api.nvim_exec_autocmds('FocusGained', {}) end,
   function() return ready() and filled() end)
-local toggle_cursor
-step('split toggle exposes text', function() toggle_cursor = cursor(); keys(' pt') end,
-  function() return ready() and st().mode == 'split' end, function()
-    assert(not st().focus)
-    assert(api.nvim_win_get_config(st().pane.win).relative == '')
-    assert(vim.deep_equal(cursor(), toggle_cursor))
-  end)
-step('pager from split view returns to the page view', function() keys(' pp') end,
-  function() return ready() and st().mode == 'page' and st().pager and st().focus == api.nvim_get_current_win() end)
-step('leave pager mode', function() keys('q') end, function() return ready() and not st().pager end)
 step('incremental search renders native match', function() keys('/left 30') end,
   function() return ready() and vim.fn.getcmdtype() == '/' and vim.fn.getline('.'):find('left 30', 1, true) end)
 step('accept search', function() keys('<CR>') end,
