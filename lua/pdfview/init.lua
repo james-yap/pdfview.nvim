@@ -1171,7 +1171,7 @@ end
 
 --- PNG of the visible stacked pages, plus a caption with the visible pages, note
 --- texts, the selected text, and in cursor mode without a selection the cursor,
---- which the image marks with a crosshair.
+--- which the image marks. Then back to pager mode: the snapshot is done with the cursor.
 local function snapshot(buf)
   local st, ranges = states[buf], selection(buf)
   local v = st.view
@@ -1198,6 +1198,7 @@ local function snapshot(buf)
     out = png,
   }
   if not try_call('snapshot', params) then return end
+  set_pager(buf, true)
   if vim.fn.has 'mac' ~= 1 then return notify('Saved snapshot ' .. png .. ' (clipboard copy is macOS-only)') end
   local res = vim.system({ 'osascript', '-e', ('set the clipboard to (read (POSIX file "%s") as «class PNGf»)'):format(png) }):wait()
   if res.code ~= 0 then return notify('Clipboard copy failed: ' .. res.stderr, vim.log.levels.ERROR) end

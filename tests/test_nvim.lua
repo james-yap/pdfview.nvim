@@ -142,6 +142,13 @@ step('terminal focus lost makes cursor hollow', function() api.nvim_exec_autocmd
   function() return ready() and outline() end)
 step('terminal focus gained restores filled cursor', function() api.nvim_exec_autocmds('FocusGained', {}) end,
   function() return ready() and filled() end)
+local system = vim.system
+step('a snapshot returns to pager mode', function()
+  -- Keep the test off the real clipboard.
+  vim.system = function() return { wait = function() return { code = 0 } end } end
+  keys(' py')
+end, function() return ready() and st().pager end, function() vim.system = system end)
+step('back to cursor mode', function() keys('c') end, function() return ready() and not st().pager end)
 step('incremental search renders native match', function() keys('/left 30') end,
   function() return ready() and vim.fn.getcmdtype() == '/' and vim.fn.getline('.'):find('left 30', 1, true) end)
 step('accept search tints the match under the cursor apart from the rest', function() keys('<CR>') end,

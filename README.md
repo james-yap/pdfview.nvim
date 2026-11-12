@@ -142,8 +142,8 @@ cursor mode starts where you are reading. In pager mode:
 `v` / `V` / `<C-v>`, a click on a page and leap (as soon as it starts) also enter
 cursor mode. `<Esc>` in normal mode returns to pager mode (it ends a selection first,
 and cancelling a leap with it returns too); your own `<Esc>` mapping, such as
-`:nohlsearch`, still runs. In cursor mode the pager keys do what they do in Vim, and
-`u` undoes annotation changes.
+`:nohlsearch`, still runs. A snapshot (`<leader>py`) also returns to pager mode. In
+cursor mode the pager keys do what they do in Vim, and `u` undoes annotation changes.
 
 Marks (`m`) and jumps remember the page view: `'a`, `` `a ``, `''`, `<C-o>` and `<C-i>`
 return to the exact view a mark was set or a jump left from, when the target is out of
