@@ -147,20 +147,22 @@ class PageViewTest(unittest.TestCase):
         helper.tint(pix, rect, matrix, 0x0000FF)
         self.assertEqual(pix.pixel(15, 10), (0, 0, 255))
 
-    @unittest.skipUnless(shutil.which("pdflatex"), "pdflatex is not installed")
-    def test_math_fills_whole_cells_and_reports_latex_errors(self):
-        out = os.path.join(self.tmp.name, "math.png")
-        params = {"tex": r"\frac{a}{b} = c", "color": 0xFFFFFF, "background": 0x102030, "cell": [10, 22], "max_cols": 70, "out": out}
-        size = helper.m_math(params)
+    def test_typst_fits_cells_and_reports_errors_at_note_lines(self):
+        out = os.path.join(self.tmp.name, "note.png")
+        params = {"source": "Cube:\n$ V = L^3 $", "color": 0xFFFFFF, "background": 0x102030, "cell": [10, 22], "cols": 60, "rows": 10, "out": out}
+        size = helper.m_typst(params)
         pix = pymupdf.Pixmap(out)
         self.assertEqual((pix.width, pix.height), (size["cols"] * 10, size["rows"] * 22))
+        self.assertLess(size["cols"], 30, "a short note takes its natural width, not the whole float")
         # The background reaches every edge, so the image blends into the float.
         for x, y in [(0, 0), (pix.width - 1, pix.height - 1), (pix.width - 1, 0), (0, pix.height - 1)]:
             self.assertEqual(pix.pixel(x, y), (0x10, 0x20, 0x30))
-        narrow = helper.m_math({**params, "max_cols": 2})
-        self.assertEqual(narrow["cols"], 2)
-        with self.assertRaisesRegex(ValueError, "^!"):
-            helper.m_math({**params, "tex": r"\frac{"})
+        # Long notes wrap at the float width and shrink to fit its height.
+        long = helper.m_typst({**params, "source": " ".join(["word"] * 400)})
+        self.assertLessEqual(long["cols"], 60)
+        self.assertLessEqual(long["rows"], 10)
+        broken = helper.m_typst({**params, "source": "fine\n\n$ x^ $"})
+        self.assertEqual([(d["lnum"], d["col"]) for d in broken["diagnostics"]], [(3, 4)])
 
     @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
     def test_page_view_interactions(self):

@@ -45,6 +45,9 @@ M.config = {
   },
   -- Where snapshots are written. nil: $TMPDIR/pdfview.
   snapshot_dir = nil, ---@type string?
+  -- Size of rendered Typst notes; 1 makes their text about as large as the terminal's.
+  -- A note still shrinks to fit its window.
+  typst_scale = 1.2,
 }
 
 ---@type table<integer, table> per PDF buffer
@@ -1025,62 +1028,26 @@ local function float_colors()
   return float.fg or normal.fg or (vim.o.background == 'dark' and 0xFFFFFF or 0x000000), float.bg or normal.bg
 end
 
-local math_id = 0
+local typst_id = 0
 
---- Preview lines of a note: each $$…$$ block is drawn by LaTeX and stands as image
---- placeholder rows at most `max_cols` wide. Blocks that do not render stay as source.
----@return string[] lines, {id: integer, lines: string[]}[] images
-local function note_lines(text, max_cols)
-  local lines, images, pos, cell = {}, {}, 1, kitty.cell_size()
-  local fg, bg = float_colors()
-  local function add(s)
-    if s ~= '' then vim.list_extend(lines, vim.split(s, '\n', { plain = true })) end
-  end
-  while true do
-    local s, e, tex = text:find('%$%$(.-)%$%$', pos)
-    if not s then break end
-    add((text:sub(pos, s - 1):gsub('\n$', '')))
-    pos = text:sub(e + 1, e + 1) == '\n' and e + 2 or e + 1
-    math_id = math_id + 1
-    local png = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-math-%d.png'):format(vim.fn.getpid(), math_id))
-    local params = { tex = vim.trim(tex), color = fg, background = bg, cell = { cell.width, cell.height }, max_cols = max_cols, out = png }
-    local ok, res = false, nil
-    if tex:find '%S' then ok, res = pcall(call, 'math', params) end
-    if ok then
-      local rows = kitty.placeholders(res.cols, res.rows)
-      images[#images + 1] = { id = kitty.show(png, res.cols, res.rows), lines = rows }
-      vim.list_extend(lines, rows)
-    else
-      add(text:sub(s, e))
-    end
-  end
-  add(text:sub(pos))
-  return lines, images
+--- Helper params rendering Typst `source` into at most cols x rows cells of a float.
+local function typst_params(source, cols, rows)
+  typst_id = typst_id + 1
+  local cell, fg, bg = kitty.cell_size(), float_colors()
+  return {
+    source = source,
+    color = fg,
+    background = bg,
+    cell = { cell.width, cell.height },
+    cols = cols,
+    rows = rows,
+    scale = M.config.typst_scale,
+    out = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-typst-%d.png'):format(vim.fn.getpid(), typst_id)),
+  }
 end
 
---- Point the placeholder rows in preview buffer `nbuf` at their images, freed with the buffer.
-local function place_images(nbuf, images)
-  local lines, row = api.nvim_buf_get_lines(nbuf, 0, -1, false), 0
-  for _, img in ipairs(images) do
-    while lines[row + 1] and lines[row + 1] ~= img.lines[1] do
-      row = row + 1
-    end
-    if not lines[row + 1] then break end
-    api.nvim_buf_set_extmark(nbuf, NS, row, 0, { end_row = row + #img.lines, end_col = 0, strict = false, hl_group = kitty.hl(img.id), priority = 200 })
-    row = row + #img.lines
-  end
-  api.nvim_create_autocmd('BufWipeout', {
-    buffer = nbuf,
-    once = true,
-    callback = function()
-      for _, img in ipairs(images) do
-        kitty.delete(img.id)
-      end
-    end,
-  })
-end
-
---- Native hover UI, with PDF note text instead of an LSP response.
+--- Native hover UI, with PDF note text instead of an LSP response. A Typst note
+--- shows rendered, or as its source if it does not compile.
 local function hover_note(buf)
   local a = under_cursor(buf, true)
   if not a then return notify('No note under the cursor') end
@@ -1090,15 +1057,28 @@ local function hover_note(buf)
   local st = states[buf]
   local view = st.view
   local max_width = math.max(1, math.min(70, view and view.cols - 4 or vim.o.columns - 4))
-  local lines, images = note_lines(a.contents, max_width)
-  local nbuf, win = vim.lsp.util.open_floating_preview(lines, 'markdown', {
+  local max_height = math.max(1, math.min(20, view and math.floor(view.rows / 2) or vim.o.lines - 4))
+  local lines, syntax, image = vim.split(a.contents, '\n', { plain = true }), 'markdown', nil
+  if a.typst then
+    syntax = 'typst'
+    local p = typst_params(a.contents, max_width, max_height)
+    local ok, res = pcall(call, 'typst', p)
+    if ok and res.cols then
+      image = kitty.show(p.out, res.cols, res.rows)
+      lines, syntax = kitty.placeholders(res.cols, res.rows), nil
+    end
+  end
+  local nbuf, win = vim.lsp.util.open_floating_preview(lines, syntax, {
     focus_id = 'pdfview.note',
     border = 'rounded',
-    title = ' ' .. a.type .. ' note ',
+    title = (' %s note '):format(a.typst and 'Typst' or a.type),
     max_width = max_width,
-    max_height = math.max(1, math.min(20, view and math.floor(view.rows / 2) or vim.o.lines - 4)),
+    max_height = max_height,
   })
-  place_images(nbuf, images)
+  if image then
+    api.nvim_buf_set_extmark(nbuf, NS, 0, 0, { end_row = #lines, end_col = 0, strict = false, hl_group = kitty.hl(image) })
+    api.nvim_create_autocmd('BufWipeout', { buffer = nbuf, once = true, callback = function() kitty.delete(image) end })
+  end
   -- The hidden text cursor does not line up with the rendered glyph. Anchor the
   -- hover to that glyph on the page instead, keeping the whole float in view.
   if view and covered(st) and api.nvim_get_current_win() == st.focus then
@@ -1124,35 +1104,124 @@ end
 
 local note_id = 0
 
+--- Float configs of a Typst note's editor and preview, as one box centered on the
+--- screen: side by side when it is wider than tall in pixels, else stacked.
+local function typst_layout()
+  local cell = kitty.cell_size()
+  local cols, rows = math.floor(vim.o.columns * 0.9), math.floor((vim.o.lines - 2) * 0.85)
+  local top, left = math.floor((vim.o.lines - 2 - rows) / 2), math.floor((vim.o.columns - cols) / 2)
+  local function pane(row, col, width, height)
+    return { relative = 'editor', row = row, col = col, width = math.max(1, width - 2), height = math.max(1, height - 2) }
+  end
+  if cols * cell.width >= rows * cell.height then
+    local w = math.floor(cols / 2)
+    return pane(top, left, w, rows), pane(top, left + w, cols - w, rows)
+  end
+  local h = math.floor(rows / 2)
+  return pane(top, left, cols, h), pane(top + h, left, cols, rows - h)
+end
+
+local typst_ns = api.nvim_create_namespace 'pdfview.typst'
+
+--- Open the editor window on Typst note buffer `nbuf` beside a preview that
+--- re-renders on every change; compile errors become diagnostics. Returns the editor window.
+local function open_typst_editor(nbuf, footer)
+  local editor, preview = typst_layout()
+  local style = { style = 'minimal', border = 'rounded', title_pos = 'center' }
+  local win = api.nvim_open_win(nbuf, true, vim.tbl_extend('force', editor, style, { title = ' Typst note ', footer = footer, footer_pos = 'center' }))
+  -- Shaped like a page view's state, so show() can draw into it.
+  local ed = { pane = { buf = api.nvim_create_buf(false, true) } }
+  vim.bo[ed.pane.buf].bufhidden = 'wipe'
+  ed.pane.win = api.nvim_open_win(ed.pane.buf, false, vim.tbl_extend('force', preview, style, { title = ' preview ', focusable = false }))
+
+  -- At most one render in flight; changes meanwhile collapse into one rerun.
+  local function refresh()
+    if ed.busy then
+      ed.again = true
+      return
+    end
+    ed.busy = true
+    local source = table.concat(api.nvim_buf_get_lines(nbuf, 0, -1, false), '\n')
+    local p = typst_params(source, api.nvim_win_get_width(ed.pane.win), api.nvim_win_get_height(ed.pane.win))
+    request('typst', p, function(err, res)
+      ed.busy = false
+      if not api.nvim_win_is_valid(ed.pane.win) then return os.remove(p.out) end
+      if err then
+        vim.diagnostic.set(typst_ns, nbuf, { { lnum = 0, col = 0, message = err, source = 'pdfview' } })
+      elseif res.diagnostics then
+        vim.diagnostic.set(typst_ns, nbuf, vim.tbl_map(function(d)
+          return { lnum = d.lnum - 1, col = d.col - 1, message = d.message, severity = vim.diagnostic.severity.ERROR, source = 'typst' }
+        end, res.diagnostics))
+      else
+        vim.diagnostic.reset(typst_ns, nbuf)
+        show(ed, p.out, { cols = res.cols, rows = res.rows })
+      end
+      if ed.again then
+        ed.again = nil
+        refresh()
+      end
+    end)
+  end
+
+  local group = api.nvim_create_augroup('pdfview.typst.' .. nbuf, { clear = true })
+  api.nvim_create_autocmd({ 'TextChanged', 'TextChangedI' }, { group = group, buffer = nbuf, callback = refresh })
+  api.nvim_create_autocmd('VimResized', {
+    group = group,
+    callback = function()
+      local e, p = typst_layout()
+      api.nvim_win_set_config(win, e)
+      api.nvim_win_set_config(ed.pane.win, p)
+      refresh()
+    end,
+  })
+  api.nvim_create_autocmd('WinClosed', {
+    group = group,
+    pattern = tostring(win),
+    callback = function()
+      api.nvim_del_augroup_by_id(group)
+      if api.nvim_win_is_valid(ed.pane.win) then api.nvim_win_close(ed.pane.win, true) end
+      if ed.image then kitty.delete(ed.image) end
+    end,
+  })
+  refresh()
+  return win
+end
+
 local function edit_note(buf, annot)
   note_id = note_id + 1
   local nbuf = api.nvim_create_buf(false, true)
   api.nvim_buf_set_name(nbuf, ('pdfview-note://%d'):format(note_id))
   vim.bo[nbuf].buftype = 'acwrite'
   vim.bo[nbuf].bufhidden = 'wipe'
-  vim.bo[nbuf].filetype = 'markdown'
+  vim.bo[nbuf].filetype = annot.typst and 'typst' or 'markdown'
   api.nvim_buf_call(nbuf, function()
     vim.bo.undolevels = -1
     api.nvim_buf_set_lines(nbuf, 0, -1, false, vim.split(annot.contents, '\n', { plain = true }))
     vim.bo.undolevels = vim.go.undolevels
   end)
   vim.bo[nbuf].modified = false
-  -- A fixed, roomy editor in the middle of the screen, whatever the cursor is on.
-  local width = math.max(1, math.min(100, math.floor(vim.o.columns * 0.8)))
-  local height = math.max(1, math.floor(vim.o.lines * 0.6))
-  local win = api.nvim_open_win(nbuf, true, {
-    relative = 'editor',
-    row = math.floor((vim.o.lines - height) / 2) - 1,
-    col = math.floor((vim.o.columns - width) / 2) - 1,
-    width = width,
-    height = height,
-    style = 'minimal',
-    border = 'rounded',
-    title = (' %s note '):format(annot.type),
-    title_pos = 'center',
-    footer = ' :w save · q save and close ',
-    footer_pos = 'center',
-  })
+  local footer = ' :w save · q save and close '
+  local win
+  if annot.typst then
+    win = open_typst_editor(nbuf, footer)
+  else
+    -- A fixed, roomy editor in the middle of the screen, whatever the cursor is on.
+    local width = math.max(1, math.min(100, math.floor(vim.o.columns * 0.8)))
+    local height = math.max(1, math.floor(vim.o.lines * 0.6))
+    win = api.nvim_open_win(nbuf, true, {
+      relative = 'editor',
+      row = math.floor((vim.o.lines - height) / 2) - 1,
+      col = math.floor((vim.o.columns - width) / 2) - 1,
+      width = width,
+      height = height,
+      style = 'minimal',
+      border = 'rounded',
+      title = (' %s note '):format(annot.type),
+      title_pos = 'center',
+      footer = footer,
+      footer_pos = 'center',
+    })
+  end
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
   local function save()
@@ -1169,12 +1238,12 @@ local function edit_note(buf, annot)
   end, { buffer = nbuf, desc = 'Save note and close' })
 end
 
-local function annotate(buf, kind, with_note)
+local function annotate(buf, kind, with_note, typst)
   local st, ranges = states[buf], selection(buf)
   vim.cmd 'normal! \27'
   if not ranges then return notify('Select text with v or V first', vim.log.levels.WARN) end
   if not ranges_page(st, ranges) then return notify('Selection must stay on one page', vim.log.levels.WARN) end
-  local res = try_call('annotate', { key = buf, kind = kind, ranges = ranges })
+  local res = try_call('annotate', { key = buf, kind = kind, ranges = ranges, typst = typst })
   if not res then return end
   apply(buf, res)
   if with_note then
@@ -1372,6 +1441,7 @@ local function setup_buffer(buf)
   map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
   map('x', prefixed 's', function() annotate(buf, 'strikeout') end, 'strike out selection')
   map('x', prefixed 'n', function() annotate(buf, 'highlight', true) end, 'highlight selection with note')
+  map('x', prefixed 't', function() annotate(buf, 'highlight', true, true) end, 'highlight selection with Typst note')
   map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')

@@ -395,6 +395,50 @@ end)
 change('redo continues past the identical state', '<C-r>', true)
 change('undo the last highlight returns to the saved state', 'u', false)
 
+-- Typst notes: an editor beside a live preview, compile errors as diagnostics, a rendered hover.
+local typst_win, typst_buf, preview_buf
+local function preview_drawn()
+  local line = api.nvim_buf_get_lines(preview_buf, 0, 1, false)[1] or ''
+  return line:sub(1, 4) == vim.fn.nr2char(0x10EEEE)
+end
+step('visual <leader>pt opens a Typst editor beside its preview', function() keys '0wwve pt' end,
+  function() return #floats() == 2 and vim.bo[api.nvim_get_current_buf()].filetype == 'typst' end, function()
+    typst_win, typst_buf = cur(), api.nvim_get_current_buf()
+    local other = floats()[1] == typst_win and floats()[2] or floats()[1]
+    preview_buf = api.nvim_win_get_buf(other)
+    assert(not api.nvim_win_get_config(other).focusable, 'the preview takes focus')
+    local e, p = api.nvim_win_get_position(typst_win), api.nvim_win_get_position(other)
+    assert(e[1] == p[1] and e[2] < p[2], 'a wide screen does not put the preview to the right: ' .. vim.inspect { e, p })
+    local created = vim.tbl_filter(function(a) return a.typst end, st().annots)
+    assert(#created == 1, 'the new annotation is not a Typst note: ' .. vim.inspect(st().annots))
+  end)
+step('typing renders the preview', function()
+  mark = shows
+  keys 'i$ x^2 $<Esc>'
+end, function() return shows > mark and preview_drawn() end, function()
+  assert(#vim.diagnostic.get(typst_buf) == 0, vim.inspect(vim.diagnostic.get(typst_buf)))
+end)
+step('a compile error is a diagnostic on its line', function() keys 'o#foo(<Esc>' end,
+  function() return #vim.diagnostic.get(typst_buf) > 0 end, function()
+    assert(vim.diagnostic.get(typst_buf)[1].lnum == 1, vim.inspect(vim.diagnostic.get(typst_buf)))
+    assert(preview_drawn(), 'the last good preview was dropped')
+  end)
+step('fixing it clears the diagnostic', function()
+  mark = shows
+  keys 'dd'
+end, function() return #vim.diagnostic.get(typst_buf) == 0 and shows > mark end)
+step('q saves the Typst note and closes both windows', function() keys 'q' end,
+  function() return #floats() == 0 and cur() == st().focus and ready() end, function()
+    assert(vim.bo[buf].modified)
+  end)
+annotations('the Typst note is listed', { 'existing note edited', '$ x^2 $' }, true)
+step('K shows the Typst note rendered', function() keys '0wwK' end, function() return #floats() == 1 end, function()
+  local line = api.nvim_buf_get_lines(api.nvim_win_get_buf(floats()[1]), 0, 1, false)[1]
+  assert(line:sub(1, 4) == vim.fn.nr2char(0x10EEEE), 'the hover is not the rendered image: ' .. vim.inspect(line))
+end)
+step('moving the cursor dismisses it', function() keys '0' end, function() return #floats() == 0 and at_alpha() end)
+change('2u removes the Typst note', '2u', false)
+
 step('opening another buffer detaches the page view', function() vim.cmd.enew() end,
   function() return (not st() or not st().focus) and api.nvim_win_get_config(cur()).relative == '' end, function()
     assert(vim.wo[host_win].statusline == base.host, 'host statusline changed on detach')
