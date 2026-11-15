@@ -25,6 +25,8 @@ import html
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -778,6 +780,64 @@ def m_hit(p):
     return best and [best[1], best[2]]
 
 
+MATH_TEX = r"""\documentclass[border=1pt]{standalone}
+\usepackage{amsmath,amssymb,xcolor}
+\begin{document}\color[HTML]{%06X}$\displaystyle %s
+$\end{document}
+"""
+math_pdfs = {}  # (tex, color) -> compiled PDF bytes, or the LaTeX error
+
+
+def math_pdf(tex, color):
+    key = (tex, color)
+    if key not in math_pdfs:
+        latex = shutil.which("pdflatex")
+        if not latex:
+            raise RuntimeError("pdflatex not found")
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "m.tex"), "w", encoding="utf-8") as f:
+                f.write(MATH_TEX % (color, tex))
+            # Notes come from arbitrary PDFs: never let them run commands.
+            run = subprocess.run(
+                [latex, "-no-shell-escape", "-interaction=nonstopmode", "-halt-on-error", "m.tex"],
+                cwd=tmp,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=20,
+            )
+            if run.returncode == 0:
+                with open(os.path.join(tmp, "m.pdf"), "rb") as f:
+                    math_pdfs[key] = f.read()
+            else:
+                math_pdfs[key] = next((l for l in run.stdout.splitlines() if l.startswith("!")), "LaTeX failed")
+    result = math_pdfs[key]
+    if isinstance(result, str):
+        raise ValueError(result)
+    return result
+
+
+def m_math(p):
+    """PNG of display math p["tex"] in colour p["color"] (0xRRGGBB) on p["background"]
+    (transparent when absent), a whole number of p["cell"] [w, h] pixel cells, at most
+    p["max_cols"] wide; returns its size in cells. A 12pt LaTeX line is about one cell high."""
+    cw, ch = p["cell"]
+    with pymupdf.open("pdf", math_pdf(p["tex"], p["color"])) as src, pymupdf.open() as doc:
+        r = src[0].rect
+        zoom = min(ch / 12, p["max_cols"] * cw / r.width)
+        cols, rows = math.ceil(r.width * zoom / cw), math.ceil(r.height * zoom / ch)
+        page = doc.new_page(width=cols * cw / zoom, height=rows * ch / zoom)
+        bg = p.get("background")
+        if bg is not None:
+            # Past the edges: an exact fill leaves an antialiased seam where it meets the page's white.
+            page.draw_rect(page.rect + (-1, -1, 1, 1), color=None, fill=pymupdf.sRGB_to_pdf(bg))
+        y = (page.rect.height - r.height) / 2
+        page.show_pdf_page(pymupdf.Rect(0, y, r.width, y + r.height), src, 0)
+        page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=bg is None).save(p["out"])
+    return {"cols": cols, "rows": rows}
+
+
 METHODS = {
     "open": m_open,
     "close": m_close,
@@ -790,6 +850,7 @@ METHODS = {
     "snapshot": m_snapshot,
     "char_boxes": m_char_boxes,
     "hit": m_hit,
+    "math": m_math,
 }
 
 

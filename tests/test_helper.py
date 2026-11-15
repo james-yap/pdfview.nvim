@@ -147,6 +147,21 @@ class PageViewTest(unittest.TestCase):
         helper.tint(pix, rect, matrix, 0x0000FF)
         self.assertEqual(pix.pixel(15, 10), (0, 0, 255))
 
+    @unittest.skipUnless(shutil.which("pdflatex"), "pdflatex is not installed")
+    def test_math_fills_whole_cells_and_reports_latex_errors(self):
+        out = os.path.join(self.tmp.name, "math.png")
+        params = {"tex": r"\frac{a}{b} = c", "color": 0xFFFFFF, "background": 0x102030, "cell": [10, 22], "max_cols": 70, "out": out}
+        size = helper.m_math(params)
+        pix = pymupdf.Pixmap(out)
+        self.assertEqual((pix.width, pix.height), (size["cols"] * 10, size["rows"] * 22))
+        # The background reaches every edge, so the image blends into the float.
+        for x, y in [(0, 0), (pix.width - 1, pix.height - 1), (pix.width - 1, 0), (0, pix.height - 1)]:
+            self.assertEqual(pix.pixel(x, y), (0x10, 0x20, 0x30))
+        narrow = helper.m_math({**params, "max_cols": 2})
+        self.assertEqual(narrow["cols"], 2)
+        with self.assertRaisesRegex(ValueError, "^!"):
+            helper.m_math({**params, "tex": r"\frac{"})
+
     @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
     def test_page_view_interactions(self):
         path = Path(self.tmp.name) / "columns.pdf"

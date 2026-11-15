@@ -1019,19 +1019,86 @@ local function under_cursor(buf, notes_only)
   return best
 end
 
+--- Foreground and background (nil: the terminal's own) of floating windows, for images in them.
+local function float_colors()
+  local float, normal = api.nvim_get_hl(0, { name = 'NormalFloat', link = false }), api.nvim_get_hl(0, { name = 'Normal', link = false })
+  return float.fg or normal.fg or (vim.o.background == 'dark' and 0xFFFFFF or 0x000000), float.bg or normal.bg
+end
+
+local math_id = 0
+
+--- Preview lines of a note: each $$…$$ block is drawn by LaTeX and stands as image
+--- placeholder rows at most `max_cols` wide. Blocks that do not render stay as source.
+---@return string[] lines, {id: integer, lines: string[]}[] images
+local function note_lines(text, max_cols)
+  local lines, images, pos, cell = {}, {}, 1, kitty.cell_size()
+  local fg, bg = float_colors()
+  local function add(s)
+    if s ~= '' then vim.list_extend(lines, vim.split(s, '\n', { plain = true })) end
+  end
+  while true do
+    local s, e, tex = text:find('%$%$(.-)%$%$', pos)
+    if not s then break end
+    add((text:sub(pos, s - 1):gsub('\n$', '')))
+    pos = text:sub(e + 1, e + 1) == '\n' and e + 2 or e + 1
+    math_id = math_id + 1
+    local png = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-math-%d.png'):format(vim.fn.getpid(), math_id))
+    local params = { tex = vim.trim(tex), color = fg, background = bg, cell = { cell.width, cell.height }, max_cols = max_cols, out = png }
+    local ok, res = false, nil
+    if tex:find '%S' then ok, res = pcall(call, 'math', params) end
+    if ok then
+      local rows = kitty.placeholders(res.cols, res.rows)
+      images[#images + 1] = { id = kitty.show(png, res.cols, res.rows), lines = rows }
+      vim.list_extend(lines, rows)
+    else
+      add(text:sub(s, e))
+    end
+  end
+  add(text:sub(pos))
+  return lines, images
+end
+
+--- Point the placeholder rows in preview buffer `nbuf` at their images, freed with the buffer.
+local function place_images(nbuf, images)
+  local lines, row = api.nvim_buf_get_lines(nbuf, 0, -1, false), 0
+  for _, img in ipairs(images) do
+    while lines[row + 1] and lines[row + 1] ~= img.lines[1] do
+      row = row + 1
+    end
+    if not lines[row + 1] then break end
+    api.nvim_buf_set_extmark(nbuf, NS, row, 0, { end_row = row + #img.lines, end_col = 0, strict = false, hl_group = kitty.hl(img.id), priority = 200 })
+    row = row + #img.lines
+  end
+  api.nvim_create_autocmd('BufWipeout', {
+    buffer = nbuf,
+    once = true,
+    callback = function()
+      for _, img in ipairs(images) do
+        kitty.delete(img.id)
+      end
+    end,
+  })
+end
+
 --- Native hover UI, with PDF note text instead of an LSP response.
 local function hover_note(buf)
   local a = under_cursor(buf, true)
   if not a then return notify('No note under the cursor') end
+  -- A second K focuses the open preview, as LSP hover does.
+  local open = vim.b[buf].lsp_floating_preview
+  if open and api.nvim_win_is_valid(open) and vim.w[open]['pdfview.note'] then return api.nvim_set_current_win(open) end
   local st = states[buf]
   local view = st.view
-  local nbuf, win = vim.lsp.util.open_floating_preview(vim.split(a.contents, '\n', { plain = true }), 'markdown', {
+  local max_width = math.max(1, math.min(70, view and view.cols - 4 or vim.o.columns - 4))
+  local lines, images = note_lines(a.contents, max_width)
+  local nbuf, win = vim.lsp.util.open_floating_preview(lines, 'markdown', {
     focus_id = 'pdfview.note',
     border = 'rounded',
     title = ' ' .. a.type .. ' note ',
-    max_width = math.max(1, math.min(70, view and view.cols - 4 or vim.o.columns - 4)),
+    max_width = max_width,
     max_height = math.max(1, math.min(20, view and math.floor(view.rows / 2) or vim.o.lines - 4)),
   })
+  place_images(nbuf, images)
   -- The hidden text cursor does not line up with the rendered glyph. Anchor the
   -- hover to that glyph on the page instead, keeping the whole float in view.
   if view and covered(st) and api.nvim_get_current_win() == st.focus then
@@ -1070,17 +1137,24 @@ local function edit_note(buf, annot)
     vim.bo.undolevels = vim.go.undolevels
   end)
   vim.bo[nbuf].modified = false
+  -- A fixed, roomy editor in the middle of the screen, whatever the cursor is on.
+  local width = math.max(1, math.min(100, math.floor(vim.o.columns * 0.8)))
+  local height = math.max(1, math.floor(vim.o.lines * 0.6))
   local win = api.nvim_open_win(nbuf, true, {
-    relative = 'cursor',
-    row = 1,
-    col = 0,
-    width = math.min(70, vim.o.columns - 4),
-    height = 8,
+    relative = 'editor',
+    row = math.floor((vim.o.lines - height) / 2) - 1,
+    col = math.floor((vim.o.columns - width) / 2) - 1,
+    width = width,
+    height = height,
+    style = 'minimal',
     border = 'rounded',
-    title = (' %s note · :w save · q save+close '):format(annot.type),
+    title = (' %s note '):format(annot.type),
     title_pos = 'center',
+    footer = ' :w save · q save and close ',
+    footer_pos = 'center',
   })
   vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
   local function save()
     local text = vim.trim(table.concat(api.nvim_buf_get_lines(nbuf, 0, -1, false), '\n'))
     local res = try_call('set_contents', { key = buf, page = annot.page, xref = annot.xref, contents = text })

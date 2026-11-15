@@ -44,6 +44,8 @@ other PDF viewers show them too.
   `'termguicolors'` on. Elsewhere (including inside tmux) PDFs are not opened.
 - For copying snapshots to the clipboard: macOS. On other systems the snapshot is saved and
   its path is shown.
+- Optional, for block math in note previews: `pdflatex` (TeX Live, MacTeX or similar)
+  on `PATH`.
 
 ## Installation
 
@@ -103,9 +105,15 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q` or
 `<Esc>` to close. Viewing a note never marks the PDF modified.
 
-`<leader>pn` opens the editable note window: `:w` saves the note into the in-memory
-PDF, and `q` saves and closes. Text editing inside this window uses its own normal
-Neovim undo history.
+Display math between `$$` delimiters (`$$\frac{a}{b}$$`, which may span lines and use
+`aligned`, `cases` or matrices) is typeset by `pdflatex` with `amsmath` and `amssymb`
+and shown as an image in the preview, in the float's colours. A block that does not compile, or
+any block when `pdflatex` is missing, stays as its source text. Shell escape is
+disabled, since notes come from the PDF. Inline `$…$` math stays as text.
+
+`<leader>pn` opens the editable note window, centered on the screen: `:w` saves the
+note into the in-memory PDF, and `q` saves and closes. Text editing inside this window
+uses its own normal Neovim undo history.
 
 These keys operate on the rendered view in both modes (in normal and visual mode); in
 other windows on the buffer they keep their native behaviour:
@@ -204,7 +212,8 @@ and the exact text you mean.
 ## How it works
 
 - `python/helper.py` (PyMuPDF) extracts the text with each character's position, renders
-  page regions, edits annotations and builds snapshots. Neovim talks to one helper process
+  page regions, edits annotations, builds snapshots and typesets note math with
+  `pdflatex`. Neovim talks to one helper process
   per session over JSON lines. View backgrounds use native bulk fills and the scrollbar
   uses whole scanline writes, avoiding Python per-pixel loops on navigation updates.
 - A non-focusable image float covers the normal PDF window. A second,
