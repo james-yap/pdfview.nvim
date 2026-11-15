@@ -214,6 +214,17 @@ end
 
 local note_win, note_buf
 
+--- Whether the note reading `text` is marked as Typst.
+local function is_typst(text)
+  for _, a in ipairs(st().annots) do
+    if a.contents == text then return a.typst end
+  end
+  error('no note reads ' .. vim.inspect(text))
+end
+
+--- The note editor is current: Typst source beside its preview, two floats.
+local function editing() return #floats() == 2 and vim.bo[api.nvim_get_current_buf()].filetype == 'typst' end
+
 -- Scenario ---------------------------------------------------------------------------------------
 
 step('opens the hidden page view over the PDF window', function() end, ready, function()
@@ -261,13 +272,13 @@ end)
 hover_cycle('q', 'q', function(t) return t:find('existing note', 1, true) and not t:find('edited', 1, true) end)
 hover_cycle('Esc', '<Esc>', function(t) return t:find('existing note', 1, true) and not t:find('edited', 1, true) end)
 
-step('<leader>pn opens the note in an editable window', function() keys ' pn' end,
-  function() return #floats() == 1 and cur() == floats()[1] end, function()
+step('<leader>pn opens the imported plain note in the Typst editor', function() keys ' pn' end, editing, function()
     note_win = cur()
     note_buf = api.nvim_win_get_buf(note_win)
     assert(note_buf ~= buf)
     assert(vim.bo[note_buf].modifiable)
     assert(note_text(note_win) == 'existing note', vim.inspect(note_text(note_win)))
+    assert(not is_typst 'existing note', 'a note from another viewer was read as Typst')
     check_state(false)
   end)
 step('typing in the note does not touch the PDF', function() keys 'A edited<Esc>' end,
@@ -278,6 +289,7 @@ step('writing the note saves it into the PDF state', function() keys ':w<CR>' en
   function() return not vim.bo[note_buf].modified and vim.bo[buf].modified end, function()
     -- The hidden float is not current, yet the visible PDF window shows the flag.
     check_state(true)
+    assert(is_typst 'existing note edited', 'a note written by pdfview is not marked Typst')
   end)
 step('q closes the saved note', function() keys 'q' end,
   function() return not api.nvim_win_is_valid(note_win) and cur() == st().focus and ready() end, function()
@@ -293,8 +305,7 @@ step(':w writes the PDF and clears the flag', function() keys ':w<CR>' end,
     check_state(false)
   end)
 
-step('<leader>pn reopens the saved note', function() keys ' pn' end,
-  function() return #floats() == 1 and cur() == floats()[1] end, function()
+step('<leader>pn reopens the saved note', function() keys ' pn' end, editing, function()
     note_win = cur()
     note_buf = api.nvim_win_get_buf(note_win)
     assert(note_text(note_win) == 'existing note edited', vim.inspect(note_text(note_win)))
@@ -324,6 +335,9 @@ change('u after :w returns to the unsaved older state', 'u', true, {
   check = function() assert(latest == png.base, 'undo did not restore the original page as rendered') end,
 })
 annotations('undone note is listed', { 'existing note' }, true)
+step('undo also drops the Typst mark', function() end, function() return true end, function()
+  assert(not is_typst 'existing note', 'undo kept the Typst mark on the plain note')
+end)
 change('Ctrl-R after :w returns to the saved state', '<C-r>', false, { image = false })
 annotations('redone note is listed', { 'existing note edited' }, false)
 
@@ -395,22 +409,21 @@ end)
 change('redo continues past the identical state', '<C-r>', true)
 change('undo the last highlight returns to the saved state', 'u', false)
 
--- Typst notes: an editor beside a live preview, compile errors as diagnostics, a rendered hover.
+-- Typst rendering: an editor beside a live preview, compile errors as diagnostics, a rendered hover.
 local typst_win, typst_buf, preview_buf
 local function preview_drawn()
   local line = api.nvim_buf_get_lines(preview_buf, 0, 1, false)[1] or ''
   return line:sub(1, 4) == vim.fn.nr2char(0x10EEEE)
 end
-step('visual <leader>pt opens a Typst editor beside its preview', function() keys '0wwve pt' end,
-  function() return #floats() == 2 and vim.bo[api.nvim_get_current_buf()].filetype == 'typst' end, function()
+step('visual <leader>pn opens the note editor beside its preview', function() keys '0wwve pn' end, editing, function()
     typst_win, typst_buf = cur(), api.nvim_get_current_buf()
     local other = floats()[1] == typst_win and floats()[2] or floats()[1]
     preview_buf = api.nvim_win_get_buf(other)
     assert(not api.nvim_win_get_config(other).focusable, 'the preview takes focus')
     local e, p = api.nvim_win_get_position(typst_win), api.nvim_win_get_position(other)
     assert(e[1] == p[1] and e[2] < p[2], 'a wide screen does not put the preview to the right: ' .. vim.inspect { e, p })
-    local created = vim.tbl_filter(function(a) return a.typst end, st().annots)
-    assert(#created == 1, 'the new annotation is not a Typst note: ' .. vim.inspect(st().annots))
+    local created = vim.tbl_filter(function(a) return a.contents == '' end, st().annots)
+    assert(#created == 1 and not created[1].typst, 'the new highlight is not an empty, unmarked one: ' .. vim.inspect(st().annots))
   end)
 step('typing renders the preview', function()
   mark = shows
@@ -432,6 +445,9 @@ step('q saves the Typst note and closes both windows', function() keys 'q' end,
     assert(vim.bo[buf].modified)
   end)
 annotations('the Typst note is listed', { 'existing note edited', '$ x^2 $' }, true)
+step('the new note is marked Typst', function() end, function() return true end, function()
+  assert(is_typst '$ x^2 $')
+end)
 step('K shows the Typst note rendered', function() keys '0wwK' end, function() return #floats() == 1 end, function()
   local line = api.nvim_buf_get_lines(api.nvim_win_get_buf(floats()[1]), 0, 1, false)[1]
   assert(line:sub(1, 4) == vim.fn.nr2char(0x10EEEE), 'the hover is not the rendered image: ' .. vim.inspect(line))

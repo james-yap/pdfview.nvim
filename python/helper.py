@@ -592,8 +592,6 @@ def m_annotate(p):
             annot.set_info(content=p["contents"])
         annot.update()
         xref = annot.xref
-        if p.get("typst"):
-            d.doc.xref_set_key(xref, TYPST_KEY, "true")
     return {"page": pno, "xref": xref, "annots": d.annots(pno), "state": d.state()}
 
 
@@ -604,6 +602,8 @@ def m_set_contents(p):
         with d.edit(p["page"], [p["xref"]]):
             annot.set_info(content=p["contents"])
             annot.update()
+            # Every note pdfview writes is Typst, including one replacing another viewer's text.
+            d.doc.xref_set_key(p["xref"], TYPST_KEY, "true")
     return {"page": p["page"], "annots": d.annots(p["page"]), "state": d.state()}
 
 
@@ -783,8 +783,9 @@ def m_hit(p):
     return best and [best[1], best[2]]
 
 
-# Typst notes: a private annotation key marks /Contents as a Typst document.
-# Other viewers ignore the key and show the source as an ordinary note.
+# Typst notes: a private annotation key marks /Contents as a Typst document. Notes
+# pdfview writes carry it; other viewers ignore it and show the source as plain text,
+# and their own notes, without it, stay plain text here.
 TYPST_KEY = "PdfviewTypst"
 # The note is included from a wrapper that sets the layout width and colours,
 # so diagnostics point at lines of the note itself.

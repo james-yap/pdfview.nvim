@@ -95,8 +95,7 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
-| `<leader>pn` | x | Highlight the selection and write a note on it |
-| `<leader>pt` | x | Highlight the selection and write a Typst note on it |
+| `<leader>pn` | x | Highlight the selection and write a Typst note on it |
 | `<leader>pn` | n | Edit the note of the annotation under the cursor |
 | `<leader>pd` | n | Delete the annotation under the cursor |
 | `<leader>pl` | n | List all annotations in the quickfix list |
@@ -104,11 +103,11 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `u` / `<C-r>` | n | Undo / redo annotation changes (takes a count) |
 | `]a` / `[a` | n | Next / previous annotation (takes a count) |
 
-`K` uses Neovim's hover-style Markdown preview, without requiring an LSP server.
-Moving the PDF cursor dismisses it; after focusing it with a second `K`, use `q` or
-`<Esc>` to close. Viewing a note never marks the PDF modified.
+`K` uses Neovim's hover-style preview, without requiring an LSP server. Moving the PDF
+cursor dismisses it; after focusing it with a second `K`, use `q` or `<Esc>` to close.
+Viewing a note never marks the PDF modified.
 
-`<leader>pn` opens the editable note window, centered on the screen: `:w` saves the
+`<leader>pn` opens the note editor (see [Typst notes](#typst-notes)): `:w` saves the
 note into the in-memory PDF, and `q` saves and closes. Text editing inside this window
 uses its own normal Neovim undo history.
 
@@ -191,21 +190,22 @@ newer file; `:e!` picks up the new version.
 
 ### Typst notes
 
-A Typst note is a whole [Typst](https://typst.app/docs/) document instead of plain text,
-for notes with maths: `$ V = L^3 \ (d V)/(d T) = 3 L^2 (d L)/(d T) $`. `<leader>pt`
-creates one; `<leader>pn` edits it in a source window beside a live preview that
-re-renders as you type, side by side on a wide screen and stacked on a tall one.
-Compile errors appear as diagnostics on their lines while the preview keeps the last
-version that compiled. `K` shows the note rendered (or its source if it does not
-compile), in the float's colours.
+Notes you write in pdfview are [Typst](https://typst.app/docs/) documents, so they can
+hold maths: `$ V = L^3 \ (d V)/(d T) = 3 L^2 (d L)/(d T) $`. `<leader>pn` edits a note in
+a source window beside a live preview that re-renders as you type, side by side on a
+wide screen and stacked on a tall one. Compile errors appear as diagnostics on their
+lines while the preview keeps the last version that compiled. `K` shows the note
+rendered (or its source if it does not compile), in the float's colours.
 
 The note takes its natural width, wrapping at the width of the window, and shrinks to
 fit if it is taller. Packages (`#import "@preview/physica:0.9.3": *`) are downloaded on
 first use into Typst's usual cache, shared with the `typst` command if you have it.
 Notes cannot read files from your disk.
 
-A Typst note is a standard highlight whose note text is the Typst source, marked with a
-private `/PdfviewTypst` key, so other PDF viewers show the source as an ordinary note.
+A note is stored as the Typst source in the annotation's ordinary note text, marked with
+a private `/PdfviewTypst` key, so other PDF viewers show the source as a plain note.
+Notes written by other programs lack the key and `K` shows them as plain text (Markdown);
+editing one with `<leader>pn` and saving turns it into a Typst note.
 
 ## Snapshots for agents
 

@@ -1125,10 +1125,14 @@ local typst_ns = api.nvim_create_namespace 'pdfview.typst'
 
 --- Open the editor window on Typst note buffer `nbuf` beside a preview that
 --- re-renders on every change; compile errors become diagnostics. Returns the editor window.
-local function open_typst_editor(nbuf, footer)
+local function open_typst_editor(nbuf)
   local editor, preview = typst_layout()
   local style = { style = 'minimal', border = 'rounded', title_pos = 'center' }
-  local win = api.nvim_open_win(nbuf, true, vim.tbl_extend('force', editor, style, { title = ' Typst note ', footer = footer, footer_pos = 'center' }))
+  local win = api.nvim_open_win(
+    nbuf,
+    true,
+    vim.tbl_extend('force', editor, style, { title = ' Typst note ', footer = ' :w save · q save and close ', footer_pos = 'center' })
+  )
   -- Shaped like a page view's state, so show() can draw into it.
   local ed = { pane = { buf = api.nvim_create_buf(false, true) } }
   vim.bo[ed.pane.buf].bufhidden = 'wipe'
@@ -1187,41 +1191,22 @@ local function open_typst_editor(nbuf, footer)
   return win
 end
 
+--- Edit the note of `annot` as Typst; saving makes it a Typst note even if another
+--- viewer wrote it as plain text.
 local function edit_note(buf, annot)
   note_id = note_id + 1
   local nbuf = api.nvim_create_buf(false, true)
   api.nvim_buf_set_name(nbuf, ('pdfview-note://%d'):format(note_id))
   vim.bo[nbuf].buftype = 'acwrite'
   vim.bo[nbuf].bufhidden = 'wipe'
-  vim.bo[nbuf].filetype = annot.typst and 'typst' or 'markdown'
+  vim.bo[nbuf].filetype = 'typst'
   api.nvim_buf_call(nbuf, function()
     vim.bo.undolevels = -1
     api.nvim_buf_set_lines(nbuf, 0, -1, false, vim.split(annot.contents, '\n', { plain = true }))
     vim.bo.undolevels = vim.go.undolevels
   end)
   vim.bo[nbuf].modified = false
-  local footer = ' :w save · q save and close '
-  local win
-  if annot.typst then
-    win = open_typst_editor(nbuf, footer)
-  else
-    -- A fixed, roomy editor in the middle of the screen, whatever the cursor is on.
-    local width = math.max(1, math.min(100, math.floor(vim.o.columns * 0.8)))
-    local height = math.max(1, math.floor(vim.o.lines * 0.6))
-    win = api.nvim_open_win(nbuf, true, {
-      relative = 'editor',
-      row = math.floor((vim.o.lines - height) / 2) - 1,
-      col = math.floor((vim.o.columns - width) / 2) - 1,
-      width = width,
-      height = height,
-      style = 'minimal',
-      border = 'rounded',
-      title = (' %s note '):format(annot.type),
-      title_pos = 'center',
-      footer = footer,
-      footer_pos = 'center',
-    })
-  end
+  local win = open_typst_editor(nbuf)
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
   local function save()
@@ -1238,12 +1223,12 @@ local function edit_note(buf, annot)
   end, { buffer = nbuf, desc = 'Save note and close' })
 end
 
-local function annotate(buf, kind, with_note, typst)
+local function annotate(buf, kind, with_note)
   local st, ranges = states[buf], selection(buf)
   vim.cmd 'normal! \27'
   if not ranges then return notify('Select text with v or V first', vim.log.levels.WARN) end
   if not ranges_page(st, ranges) then return notify('Selection must stay on one page', vim.log.levels.WARN) end
-  local res = try_call('annotate', { key = buf, kind = kind, ranges = ranges, typst = typst })
+  local res = try_call('annotate', { key = buf, kind = kind, ranges = ranges })
   if not res then return end
   apply(buf, res)
   if with_note then
@@ -1441,7 +1426,6 @@ local function setup_buffer(buf)
   map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
   map('x', prefixed 's', function() annotate(buf, 'strikeout') end, 'strike out selection')
   map('x', prefixed 'n', function() annotate(buf, 'highlight', true) end, 'highlight selection with note')
-  map('x', prefixed 't', function() annotate(buf, 'highlight', true, true) end, 'highlight selection with Typst note')
   map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
   map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
   map('n', prefixed 'l', function() list(buf) end, 'list annotations')
