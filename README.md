@@ -18,7 +18,8 @@ hand what you are looking at to an AI agent as one captioned image.
 ## Tour
 
 The clips use a short set of lecture notes; the keys pressed appear in the middle of the
-statusline (`<leader>` is Space).
+statusline (`<leader>` is Space). [doc/demo](doc/demo/README.md) has the notes and how the
+clips were recorded.
 
 ### Read like a pager, move like Vim
 
