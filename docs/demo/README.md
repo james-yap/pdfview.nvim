@@ -101,6 +101,36 @@ so the scrollbar has pills: `]p dd mb ]p d mc gg`.
 | `hero.png` | the annotations and the Typst note as above, `:noh`, cursor on "light string" (`:call search('light s')`), `c` `zt` `ma` | `K`, then the still. Close any focused preview first (`q`), or `K` focuses it instead of opening one under the cursor. |
 | `snapshot.png` | the Typst note, then `/Newton<CR>` `v$` | `<leader>py`; the PNG is the newest file in `$TMPDIR/pdfview/`. |
 
+## Social-media clip
+
+A 1680 × 1080 MP4 for X/Twitter: the Ghostty window fills the frame, title bar reading
+`nvim notes.pdf`, with large keycaps (in the style of
+[Keyviz](https://github.com/mulaRahul/keyviz)) drawn over its bottom edge afterwards.
+No keycast plugin is used. `social.keys.json` is the key log of the first take.
+
+1. `uv run --script docs/demo/social_pdf.py` writes `social.pdf`: `notes.pdf` with five
+   more annotations around the equations on page 1. Record from a copy named
+   `notes.pdf`.
+2. Launch as in [Setup](#setup), without screenkey, and with `vim.o.title = true` and
+   `vim.o.titlestring = 'nvim notes.pdf'` in place of `keycast.lua`'s screenkey part.
+   Do not pass Ghostty `--title`: the window title must come from Neovim. Size the window
+   to 1120 × 720 points.
+3. Record with `screencapture -x -v -l<id> NAME.mov` and log every key you send as
+   `[wall-clock ms, key, "key" | "text"]`; mark typed text (search patterns, note text)
+   `"text"`. After stopping the recording, convert each time to seconds into the movie:
+   `t = duration − (stop time − key time)`, where `duration` comes from `ffprobe` and
+   the stop time is when you sent SIGINT. Write `NAME.keys.json` in the format described
+   at the top of `compose.py`.
+4. `uv run --with pillow docs/demo/compose.py NAME` writes `NAME.mp4` (H.264, 30 fps). It
+   trims 0.8 s from the start, crops the window from the capture, squares off its
+   corners, paints coloured traffic lights over the recording badge that macOS draws
+   there, and draws the keycaps.
+
+Keys in the first take, starting from the top of the document in pager mode: `/`
+`period` `<CR>` `ve` `<leader>pn` `i`, type `Small swings only:<CR>`, `$  $`
+`<Left><Left>`, type `T = 2 pi sqrt(l / g)`, `<Esc>` `q` `K`, then `/` `pendulum` `<CR>`
+`n` `n` `n`. Give each key 150–300 ms and each typed character 70–110 ms.
+
 ## Gotchas
 
 - screenkey's `win_opts.anchor` must be `NW`/`NE`/`SW`/`SE`; anything else fails without
