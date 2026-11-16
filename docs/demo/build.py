@@ -2,10 +2,10 @@
 # requires-python = ">=3.11"
 # dependencies = ["pymupdf>=1.26,<1.27", "typst>=0.15,<0.16"]
 # ///
-"""Build doc/demo/notes.pdf: compile notes.typ, then add annotations in assorted
+"""Build docs/demo/notes.pdf: compile notes.typ, then add annotations in assorted
 colours, as if made in another PDF reader, so the page and scrollbar look lived-in.
 
-    uv run --script doc/demo/build.py
+    uv run --script docs/demo/build.py
 """
 from pathlib import Path
 

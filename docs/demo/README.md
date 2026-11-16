@@ -1,6 +1,6 @@
 # Recording the README demos
 
-How the GIFs and stills in `doc/media/` were made, so they can be re-recorded after a
+How the GIFs and stills in `docs/media/` were made, so they can be re-recorded after a
 feature changes. Recorded on macOS in Ghostty; nothing here is needed to use the plugin.
 
 ## Files
@@ -8,7 +8,7 @@ feature changes. Recorded on macOS in Ghostty; nothing here is needed to use the
 | File | Purpose |
 | --- | --- |
 | `notes.typ` | Three pages of single-column lecture notes (A Pendulum in a Moving Lift), written for the demos: narrow pages so text stays large in a GIF, maths for Leap and Typst. |
-| `build.py` | `uv run --script doc/demo/build.py` compiles `notes.typ` and adds coloured annotations "from another reader" (blue, green, pink, purple highlights, underlines, a squiggly) so the page and scrollbar look lived-in. Writes `notes.pdf`. |
+| `build.py` | `uv run --script docs/demo/build.py` compiles `notes.typ` and adds coloured annotations "from another reader" (blue, green, pink, purple highlights, underlines, a squiggly) so the page and scrollbar look lived-in. Writes `notes.pdf`. |
 | `notes.pdf` | The built demo PDF. Record from a copy: the clips modify it in memory. |
 | `keycast.lua` | Shows typed keys in the middle of the statusline (via [screenkey.nvim](https://github.com/NStefan002/screenkey.nvim), recorded with commit `740e238`), and turns off which-key popups in PDF buffers. |
 
@@ -19,7 +19,7 @@ feature changes. Recorded on macOS in Ghostty; nothing here is needed to use the
 
    ```sh
    nvim --listen /tmp/demo/nvim.sock --cmd 'set rtp^=~/git/pdfview.nvim' \
-     --cmd 'set rtp^=/tmp/demo/screenkey' -c 'luafile ~/git/pdfview.nvim/doc/demo/keycast.lua' \
+     --cmd 'set rtp^=/tmp/demo/screenkey' -c 'luafile ~/git/pdfview.nvim/docs/demo/keycast.lua' \
      -c 'edit notes.pdf'
    ```
 
