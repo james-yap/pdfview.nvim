@@ -1,25 +1,41 @@
 # pdfview.nvim
 
-Read and annotate PDFs in Neovim with ordinary Vim motions, and hand what you are
-looking at to an AI agent as one captioned image.
+Read and annotate PDFs in Neovim with ordinary Vim motions, write notes in Typst, and
+hand what you are looking at to an AI agent as one captioned image.
 
-Opening a `.pdf` fills its window with the rendered pages, stacked vertically for
-continuous scrolling, in pager mode: like `less` or Vimium, keys pan the pages and no
-cursor is drawn. Cursor mode (see below) shows the cursor for selecting and annotating.
-The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks, visual mode and yanking
-still operate on real buffer text. In cursor mode the view follows the cursor, tints
-its line or visual selection, and marks the character under the cursor; the cursor
-becomes hollow when you leave the PDF window or the terminal loses focus.
-A document-wide scrollbar at the right edge shows the whole PDF: hairlines between
-pages, annotations in their own colour (darker at the end when they carry a note),
-lines matching the search in orange, marks `a`–`z` and `'` (where `''` returns to) as
-labelled pills, the cursor line in cursor mode as a blue rule, and a see-through thumb
-over the part in view. A badge beside its bottom end shows the page in the middle of
-the view and the page count, after `CURSOR` in cursor mode (highlight `PdfViewPage`,
-linked to `StatusLine`).
+![pdfview in Ghostty: a lecture-notes PDF with coloured highlights, an underline and a strikethrough, a rendered Typst note with a square root in a hover window, and the scrollbar on the right with annotation ticks and mark pills](doc/media/hero.png)
+
+- **Rendered pages in the terminal** (kitty or Ghostty), stacked for continuous scrolling.
+- **Vim on the real text**: motions, `/` search, marks, visual mode and yanking.
+- **[Leap](#jump-to-anything-you-can-see) to any word on screen**, maths included.
+- **[Annotations](#annotate)** that are standard PDF annotations, so other viewers show them too.
+- **[Typst notes](#notes-in-typst-with-live-preview)** with a live preview.
+- **[A scrollbar for the whole document](#the-whole-document-in-the-scrollbar)**, with
+  annotations, search matches and marks on it.
+- **[Snapshots for agents](#snapshots-for-agents)**: one PNG with the page, your selection
+  and a caption.
+
+## Tour
+
+The clips use a short set of lecture notes; the keys pressed appear in the middle of the
+statusline (`<leader>` is Space).
+
+### Read like a pager, move like Vim
+
+Opening a `.pdf` fills its window with the rendered pages in pager mode: like `less` or
+Vimium, keys pan the pages and no cursor is drawn. `c` switches to cursor mode for
+selecting and annotating. The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks,
+visual mode and yanking still operate on real buffer text. In cursor mode the view
+follows the cursor, tints its line or visual selection, and marks the character under
+the cursor; the cursor becomes hollow when you leave the PDF window or the terminal loses
+focus.
 
 To read the extracted text (reading order, what a yank copies), `:split` the PDF
 window: other windows on the buffer show its text as usual.
+
+### Jump to anything you can see
+
+![Leap: typing f, b, o labels every "bo" on the page; pressing a label jumps there, then f, s, i jumps into the sin of an equation](doc/media/leap.gif)
 
 With [leap.nvim](https://codeberg.org/andyg/leap.nvim), pdfview supplies targets for
 everything visible on the rendered pages, including text outside the hidden text
@@ -33,19 +49,69 @@ custom-target jump asks for its characters again.
 Labels are mirrored through Leap's `on_beacons` hook (any existing hook is preserved).
 They snap to terminal cells, so very close matches can share a label cell.
 
-Annotations (highlight, underline, strikethrough, notes) are standard PDF annotations, so
-other PDF viewers show them too.
+### Annotate
+
+![Searching for a phrase, selecting it with v and highlighting, underlining and striking it out with leader-p h, u and s, then undoing and redoing the strikethrough](doc/media/annotations.gif)
+
+Select text and press `<leader>ph`, `<leader>pu` or `<leader>ps` to highlight, underline
+or strike it out; `u` and `<C-r>` undo and redo, and `:w` saves into the PDF. The blue,
+green, pink and purple ones in the clips were made in another PDF reader: pdfview shows,
+lists, edits and deletes those too, and other viewers show yours. See
+[Annotations and saving](#annotations-and-saving).
+
+### Notes in Typst, with live preview
+
+![Leader-p n on a selection opens a Typst editor beside a live preview; typing a sentence and the display formula T = 2 pi sqrt(l / g) renders it as it is typed; q saves, and K shows the note rendered](doc/media/typst.gif)
+
+`<leader>pn` on a selection highlights it and opens a [Typst](https://typst.app/docs/)
+note: source on one side, a preview that re-renders as you type on the other. `q` saves
+and closes; `K` shows the note rendered. A small square past the end of an annotation
+marks that it carries a note. See [Typst notes](#typst-notes).
+
+### Marks remember the view
+
+![ma sets mark a mid-document; gg goes to the top; 'a returns to exactly the same view, and '' flips between the two](doc/media/marks.gif)
+
+Marks (`m`) and jumps remember the page view: `'a`, `` `a ``, `''`, `<C-o>` and `<C-i>`
+return to the exact view a mark was set or a jump left from, when the target is out of
+view. Other moves scroll just enough to show the cursor.
+
+### The whole document in the scrollbar
+
+![Searching for pendulum puts an orange tick on the scrollbar for every matching line; n moves through them and the thumb follows; ma adds an a pill](doc/media/scrollbar.gif)
+
+The panel on the far right of these two clips is the scrollbar magnified three times
+sideways for the recording; in Neovim it is the thin bar beside it.
+
+A document-wide scrollbar at the right edge shows the whole PDF: hairlines between
+pages, annotations in their own colour (darker at the end when they carry a note),
+lines matching the search in orange, marks `a`–`z` and `'` (where `''` returns to) as
+labelled pills, the cursor line in cursor mode as a blue rule, and a see-through thumb
+over the part in view. A badge beside its bottom end shows the page in the middle of
+the view and the page count, after `CURSOR` in cursor mode (highlight `PdfViewPage`,
+linked to `StatusLine`).
+
+### Snapshots for agents
+
+![A snapshot: the visible part of the page with the selected sentence boxed in red, and a caption listing the PDF path, the page, the Typst note on the page and the selected text](doc/media/snapshot.png)
+
+`<leader>py` turns what you see into one PNG for an AI agent (copied to the clipboard on
+macOS). See [Snapshots for agents](#snapshots-for-agents-1).
 
 ## Requirements
 
-- Neovim 0.12+
-- [uv](https://docs.astral.sh/uv/). The PDF work is done by a small Python script run with
-  `uv run --script`; on first use uv installs Python,
-  [PyMuPDF](https://pymupdf.readthedocs.io/) and the [Typst](https://typst.app/) compiler
-  ([typst-py](https://github.com/messense/typst-py)) into an isolated, cached environment
-  (this can take a few seconds, once). The Typst command-line tool is not needed.
+- Neovim 0.12+.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) on `$PATH`. The PDF work
+  is done by a small Python script run with `uv run --script`; on first use uv installs
+  Python (3.11+, if you have none), [PyMuPDF](https://pymupdf.readthedocs.io/) and the
+  [Typst](https://typst.app/) compiler ([typst-py](https://github.com/messense/typst-py))
+  from the script's lock file into an isolated, cached environment. This takes a few
+  seconds once and needs network access. No pip, virtualenv or Typst command-line tool
+  is needed.
 - [kitty](https://sw.kovidgoyal.net/kitty/) or [Ghostty](https://ghostty.org/), with
   `'termguicolors'` on. Elsewhere (including inside tmux) PDFs are not opened.
+- macOS, or Linux on x86_64 or aarch64 with glibc 2.28+ (or x86_64 musl): the platforms
+  with prebuilt PyMuPDF and typst wheels.
 - For copying snapshots to the clipboard: macOS. On other systems the snapshot is saved and
   its path is shown.
 
@@ -64,7 +130,10 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 { 'james-yap/pdfview.nvim', opts = {} }
 ```
 
-`setup()` is required: it registers the handler that opens `*.pdf` files.
+`setup()` is required: it registers the handler that opens `*.pdf` files (lazy.nvim's
+`opts = {}` calls it). Then run `:checkhealth pdfview`: it checks the Neovim version,
+the terminal, uv, and that the helper starts, which also installs its dependencies
+ahead of the first PDF.
 
 ## Configuration
 
@@ -149,15 +218,21 @@ cursor mode starts where you are reading. In pager mode:
 | `gg` / `G` | Pan to the start / end |
 | `c` | Cursor mode |
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Pager: open a .pdf
+    Pager --> Cursor: c, v / V / Ctrl-v, click, leap
+    Cursor --> Pager: Esc, snapshot
+    Pager: Pager mode (keys pan the pages, no cursor)
+    Cursor: Cursor mode (Vim motions, selections, annotations)
+```
+
 `v` / `V` / `<C-v>`, a click on a page and leap (as soon as it starts) also enter
 cursor mode. `<Esc>` in normal mode returns to pager mode (it ends a selection first,
 and cancelling a leap with it returns too); your own `<Esc>` mapping, such as
 `:nohlsearch`, still runs. A snapshot (`<leader>py`) also returns to pager mode. In
 cursor mode the pager keys do what they do in Vim, and `u` undoes annotation changes.
-
-Marks (`m`) and jumps remember the page view: `'a`, `` `a ``, `''`, `<C-o>` and `<C-i>`
-return to the exact view a mark was set or a jump left from, when the target is out of
-view. Other moves scroll just enough to show the cursor.
 
 ## Annotations and saving
 
@@ -174,6 +249,14 @@ The PDF buffer behaves like a file you edit:
 - `:w` preserves that history. Undoing away from the saved state marks the PDF
   modified again; returning to it clears the modified flag. Reloading starts fresh.
 - History is session-only: there is no on-disk annotation autosave or crash recovery.
+
+```mermaid
+flowchart LR
+    keys["#lt;leader#gt;ph / pu / ps / pn / pd"] --> mem["Annotations in memory<br/>buffer modified [+]"]
+    mem -- "u / Ctrl-r" --> mem
+    mem -- ":w (incremental save)" --> disk[("PDF on disk")]
+    disk -- ":e!, or changed on disk" --> mem
+```
 
 Statuslines must include `%m` to show the usual `[+]` for unsaved changes. The
 visible PDF window is technically inactive because a hidden float holds
@@ -232,6 +315,24 @@ and the exact text you mean.
 
 ## How it works
 
+```mermaid
+flowchart TB
+    subgraph nvim [Neovim]
+        direction LR
+        text["Hidden float on the PDF buffer<br/>extracted text, holds focus"]
+        lua["lua/pdfview"]
+        img["Image float over the PDF window"]
+        text -- "cursor, selection,<br/>search, marks" --> lua
+        lua -- "placeholder cells" --> img
+    end
+    helper["python/helper.py<br/>PyMuPDF + typst-py, run by uv"]
+    pdf[("file.pdf")]
+    term["kitty / Ghostty"]
+    lua <-- "JSON lines: requests out,<br/>text layer and PNGs back" --> helper
+    helper -- "read, incremental save" --> pdf
+    lua -- "kitty graphics protocol" --> term
+```
+
 - `python/helper.py` (PyMuPDF) extracts the text with each character's position, renders
   page regions, edits annotations, builds snapshots and renders Typst notes (typst-py).
   Neovim talks to one helper process
@@ -251,6 +352,18 @@ and the exact text you mean.
 Filetypes: `pdfview` (text buffer), `pdfview_page` (image float). Highlight groups, all
 overridable: `PdfViewHighlight`, `PdfViewUnderline`, `PdfViewStrikeOut`,
 `PdfViewSquiggly`, `PdfViewNote`, `PdfViewPage`.
+
+## Troubleshooting
+
+Start with `:checkhealth pdfview`.
+
+| Message | Fix |
+| --- | --- |
+| `pdfview needs uv on $PATH` | Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and make sure the `PATH` Neovim starts with includes it (GUI launchers often miss `~/.local/bin`). |
+| `no page view: needs kitty or Ghostty` / `tmux is not supported` | Open the PDF in kitty or Ghostty, outside tmux. |
+| `PDF helper exited (…): Failed to download …` | The first run downloads PyMuPDF and typst from PyPI. Behind a proxy set `HTTPS_PROXY`; for a mirror set `UV_INDEX_URL`. |
+| `PDF helper timed out` | The first install took longer than two minutes. Run `:checkhealth pdfview` (it waits for the install), then reopen the PDF. |
+| `needs Neovim 0.12 or newer` | Upgrade Neovim. |
 
 ## Limitations
 

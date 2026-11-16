@@ -86,7 +86,9 @@ end
 
 local function start_helper()
   if helper.proc then return end
-  if vim.fn.executable 'uv' ~= 1 then error('PDF viewer requires uv', 0) end
+  if vim.fn.executable 'uv' ~= 1 then
+    error('pdfview needs uv on $PATH (https://docs.astral.sh/uv/getting-started/installation/)', 0)
+  end
   helper.proc = vim.system({ 'uv', 'run', '--quiet', '--script', HELPER }, {
     stdin = true,
     stdout = on_stdout,
@@ -1585,6 +1587,9 @@ end
 
 ---@param opts? pdfview.Config
 function M.setup(opts)
+  if vim.fn.has 'nvim-0.12' ~= 1 then
+    return notify(('needs Neovim 0.12 or newer (this is %s)'):format(tostring(vim.version())), vim.log.levels.ERROR)
+  end
   M.config = vim.tbl_deep_extend('force', M.config, opts or {})
   set_hls()
   -- An earlier ModeChanged handler (notably which-key) can wait in getchar()
