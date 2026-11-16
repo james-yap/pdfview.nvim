@@ -283,6 +283,32 @@ class AnnotationCase(unittest.TestCase):
         return self.call("annotate", kind=kind, ranges=[[self.line(pno, index), cs, ce]], **extra)
 
 
+class NoteMarkerTest(AnnotationCase):
+    def render(self):
+        return helper.render_clip(self.d, 0, self.d.doc[0].rect, 600, [])
+
+    def test_only_annotations_with_a_note_get_a_mark_just_past_their_end(self):
+        made = self.annotate()  # "beta", no note yet
+        bare = self.render()
+        self.call("set_contents", page=0, xref=made["xref"], contents="a note")
+        noted = self.render()
+        changed = [
+            (x, y)
+            for y in range(bare.height)
+            for x in range(bare.width)
+            if bare.pixel(x, y) != noted.pixel(x, y)
+        ]
+        self.assertTrue(changed, "adding a note left the page unmarked")
+        xs, ys = [x for x, _ in changed], [y for _, y in changed]
+        word = self.d.range_rect(self.line(0), 6, 9) * (600 / self.d.doc[0].rect.width)
+        # A small mark beside the word's end, near its top, not over its text.
+        self.assertGreaterEqual(min(xs), word.x1 - 1)  # whole pixels
+        self.assertLess(max(xs) - min(xs), word.height / 2)
+        self.assertLess(min(ys), word.y0 + word.height / 2)
+        self.call("set_contents", page=0, xref=made["xref"], contents="")
+        self.assertEqual(self.render().samples, bare.samples)
+
+
 class AnnotationStateTest(AnnotationCase):
     def test_edits_that_change_nothing_leave_the_state_and_document_alone(self):
         same = self.call("set_contents", page=0, xref=self.hl, contents="existing note")

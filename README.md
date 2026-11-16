@@ -103,13 +103,16 @@ Keys are only mapped in PDF buffers (`x` is visual mode).
 | `u` / `<C-r>` | n | Undo / redo annotation changes (takes a count) |
 | `]a` / `[a` | n | Next / previous annotation (takes a count) |
 
-`K` uses Neovim's hover-style preview, without requiring an LSP server. Moving the PDF
-cursor dismisses it; after focusing it with a second `K`, use `q` or `<Esc>` to close.
-Viewing a note never marks the PDF modified.
+An annotation that carries a note shows a small square in a darker shade of its colour
+just past its end, like a footnote mark; the mark is drawn on screen only, never into
+the PDF. `K` uses Neovim's hover-style preview, without requiring an LSP server. Moving
+the PDF cursor dismisses it; after focusing it with a second `K`, use `q` or `<Esc>` to
+close. Viewing a note never marks the PDF modified.
 
 `<leader>pn` opens the note editor (see [Typst notes](#typst-notes)): `:w` saves the
-note into the in-memory PDF, and `q` saves and closes. Text editing inside this window
-uses its own normal Neovim undo history.
+note into the in-memory PDF, and `q` saves and closes. Saving an empty note removes it,
+leaving a plain highlight. Text editing inside this window uses its own normal Neovim
+undo history.
 
 These keys operate on the rendered view in both modes (in normal and visual mode); in
 other windows on the buffer they keep their native behaviour:

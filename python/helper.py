@@ -464,11 +464,29 @@ def tint(pix, rect, matrix, color, outline=False):
     pix.copy(sub, irect)
 
 
+def note_marker(pix, annot, matrix):
+    """Mark a text annotation that carries a note with a small square just past the
+    top-right of its last line, like a footnote mark, in a darker shade of its colour."""
+    q = pymupdf.Quad(annot.vertices[-4:]) * annot.parent.rotation_matrix
+    s = abs(q.ll - q.ul) * 0.28
+    # Just past the end of the line and slightly raised, whichever way the text runs.
+    mid = (q.ur + (q.ur - q.ul).unit * (s / 2) + (q.ll - q.ul).unit * (s / 5)) * matrix
+    h = s * matrix.a / 2
+    box = pymupdf.Rect(mid.x - h, mid.y - h, mid.x + h, mid.y + h).irect & pix.irect
+    if not box.is_empty:
+        color = annot.colors["stroke"] or (1, 1, 0)
+        pix.set_rect(box, tuple(round(c * 140) for c in color))
+
+
 def render_clip(d, pno, clip, width, marks):
     clip = pymupdf.Rect(clip)
     zoom = width / clip.width
     matrix = pymupdf.Matrix(zoom, zoom)
-    pix = d.doc[pno].get_pixmap(matrix=matrix, clip=clip, annots=True, alpha=False)
+    page = d.doc[pno]
+    pix = page.get_pixmap(matrix=matrix, clip=clip, annots=True, alpha=False)
+    for annot in page.annots(types=SUPPORTED):
+        if annot.vertices and annot.info.get("content"):
+            note_marker(pix, annot, matrix)
     for mark in marks or []:
         for lnum, cs, ce in mark["ranges"]:
             tint(pix, d.range_rect(lnum, cs, ce), matrix, mark["color"], mark.get("outline", False))
@@ -600,10 +618,14 @@ def m_set_contents(p):
     _page, annot = d.load_annot(p["page"], p["xref"])
     if annot.info.get("content", "") != p["contents"]:  # no change, no new state
         with d.edit(p["page"], [p["xref"]]):
-            annot.set_info(content=p["contents"])
-            annot.update()
-            # Every note pdfview writes is Typst, including one replacing another viewer's text.
-            d.doc.xref_set_key(p["xref"], TYPST_KEY, "true")
+            if p["contents"]:
+                annot.set_info(content=p["contents"])
+                annot.update()
+                # Every note pdfview writes is Typst, including one replacing another viewer's text.
+                d.doc.xref_set_key(p["xref"], TYPST_KEY, "true")
+            else:  # set_info ignores empty text; no note leaves a plain highlight
+                for key in ("Contents", TYPST_KEY):
+                    d.doc.xref_set_key(p["xref"], key, "null")
     return {"page": p["page"], "annots": d.annots(p["page"]), "state": d.state()}
 
 
