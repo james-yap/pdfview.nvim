@@ -10,10 +10,13 @@ The text layer stays hidden: `hjkl`, `w`, `/`, `n`, marks, visual mode and yanki
 still operate on real buffer text. In cursor mode the view follows the cursor, tints
 its line or visual selection, and marks the character under the cursor; the cursor
 becomes hollow when you leave the PDF window or the terminal loses focus.
-A document-wide scrollbar at the right edge marks page boundaries (light marks on the
-thumb), and a badge beside its bottom end shows the page in the middle of the view
-and the page count, after `CURSOR` in cursor mode (highlight `PdfViewPage`, linked to
-`StatusLine`).
+A document-wide scrollbar at the right edge shows the whole PDF: hairlines between
+pages, annotations in their own colour (darker at the end when they carry a note),
+lines matching the search in orange, marks `a`–`z` and `'` (where `''` returns to) as
+labelled pills, the cursor line in cursor mode as a blue rule, and a see-through thumb
+over the part in view. A badge beside its bottom end shows the page in the middle of
+the view and the page count, after `CURSOR` in cursor mode (highlight `PdfViewPage`,
+linked to `StatusLine`).
 
 To read the extracted text (reading order, what a yank copies), `:split` the PDF
 window: other windows on the buffer show its text as usual.
@@ -233,7 +236,8 @@ and the exact text you mean.
   page regions, edits annotations, builds snapshots and renders Typst notes (typst-py).
   Neovim talks to one helper process
   per session over JSON lines. View backgrounds use native bulk fills and the scrollbar
-  uses whole scanline writes, avoiding Python per-pixel loops on navigation updates.
+  is drawn as vector shapes on a small page, then rasterized in one call, avoiding
+  Python per-pixel loops on navigation updates.
 - A non-focusable image float covers the normal PDF window. A second,
   hidden float on the text buffer holds focus and inherits the window's jumplist and
   alternate file. Vim handles ordinary text motions and operators; pdfview only maps

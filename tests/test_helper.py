@@ -63,20 +63,37 @@ class PageViewTest(unittest.TestCase):
         self.assertEqual(pix.pixel(x, 300 + y), (0, 0, 0))
         self.assertEqual(pix.pixel(x, y), (255, 0, 0))
 
-    def test_scrollbar_bulk_fills_preserve_page_and_track_boundaries(self):
-        pix = helper.render_view(self.d, 400, 120, 570, 10, [])
-        helper.scrollbar(pix, self.d, 570, 10, 12)
-        # Page composition is untouched to the left of the 12px scrollbar.
-        self.assertEqual(pix.pixel(387, 0), (255, 0, 0))
-        self.assertEqual(pix.pixel(387, 119), (0, 0, 255))
-        self.assertEqual(pix.pixel(399, 0), helper.SCROLLBAR["track"])
-        self.assertEqual(pix.pixel(399, 119), helper.SCROLLBAR["track"])
-        # Page 2 starts at 610/2020 of the document, inside the inset thumb
-        # (rows 34-40): its tick is drawn over the thumb in the light colour.
-        self.assertEqual(pix.pixel(390, 36), helper.SCROLLBAR["thumb_tick"])
-        self.assertEqual(pix.pixel(388, 36), helper.SCROLLBAR["track"])
-        self.assertEqual(pix.pixel(390, 34), helper.SCROLLBAR["thumb"])
-        self.assertEqual(pix.pixel(389, 33), helper.SCROLLBAR["track"])
+    def test_scrollbar_marks_search_marks_and_cursor_at_their_lines(self):
+        # At 400px wide the stacked pages are 600 + 10 + 800 + 10 + 600 = 2020px; the
+        # 1000px bar shows them at 1000/2020 scale, with the thumb over the lower half.
+        width, height, top, bw = 400, 1000, 1020, 24
+        bare = helper.render_view(self.d, width, height, top, 10, [])
+        pix = helper.render_view(self.d, width, height, top, 10, [])
+        one, two, three = self.d.page_lines[0][0], self.d.page_lines[1][0], self.d.header(2)
+        helper.scrollbar(pix, self.d, top, 10, {"width": bw, "search": [two], "marks": [["a", one]], "cursor": three})
+        scale = height / 2020
+
+        def bar_y(pno, y):  # bar row of page-space y on page pno
+            return round(([0, 610, 1420][pno] + y * width / self.d.doc[pno].rect.width) * scale)
+
+        def assert_color(x, y, color):
+            got, want = pix.pixel(x, y), tuple(round(c * 255) for c in color)
+            self.assertTrue(all(abs(a - b) <= 3 for a, b in zip(got, want)), f"({x}, {y}): {got} != {want}")
+
+        x0 = width - bw
+        # The pages are untouched left of the bar.
+        for y in range(0, height, 50):
+            self.assertEqual(pix.pixel(x0 - 1, y), bare.pixel(x0 - 1, y))
+        _, y0, y1, _ = self.d.info[two - 1]
+        search_y = bar_y(1, (y0 + y1) / 2)
+        assert_color(width - 4, search_y, helper.SCROLLBAR["search"])  # from the right
+        assert_color(x0 + 4, search_y, helper.SCROLLBAR["track"])
+        _, y0, y1, _ = self.d.info[one - 1]
+        assert_color(x0 + 3, bar_y(0, (y0 + y1) / 2), helper.SCROLLBAR["mark"])
+        # The cursor rule crosses the whole bar, over the thumb (page 3's top is in view).
+        for x in (x0 + 1, width - 2):
+            assert_color(x, bar_y(2, 0), helper.SCROLLBAR["cursor"])
+        assert_color(x0 + 4, search_y + 40, helper.SCROLLBAR["track"])
 
     def test_hit_returns_character_index_and_empty_page_has_no_hit(self):
         helper.docs[1] = self.d

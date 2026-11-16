@@ -455,17 +455,22 @@ local function update_badge(st, view)
   end
 end
 
---- Matches of the search being typed (incsearch) or of the last search (while
---- 'hlsearch' shows it) on the lines `visible`, as helper ranges: the match under
+--- The search being typed (incsearch) or the last search (while 'hlsearch' shows
+--- it), for matchbufline, which ignores 'smartcase' and assumes 'magic'; nil: none.
+local function search_pattern(st)
+  local pattern = st.incsearch
+  if not pattern and vim.o.hlsearch and vim.v.hlsearch == 1 then pattern = vim.fn.getreg '/' end
+  if not pattern or pattern == '' then return nil end
+  local ic = vim.o.ignorecase and not (vim.o.smartcase and vim.fn.match(pattern, [[\u]]) >= 0)
+  return (ic and [[\c]] or [[\C]]) .. (vim.o.magic and [[\m]] or [[\M]]) .. pattern
+end
+
+--- Matches of the search on the lines `visible`, as helper ranges: the match under
 --- the cursor (like CurSearch, so it stands out in pager mode too), and the rest.
 local function search_ranges(buf, visible, lnum, col)
   local st = states[buf]
-  local pattern = st.incsearch
-  if not pattern and vim.o.hlsearch and vim.v.hlsearch == 1 then pattern = vim.fn.getreg '/' end
-  if not pattern or pattern == '' or #visible == 0 then return nil, nil end
-  -- matchbufline ignores 'smartcase' and assumes 'magic'; honour search options.
-  local ic = vim.o.ignorecase and not (vim.o.smartcase and vim.fn.match(pattern, [[\u]]) >= 0)
-  pattern = (ic and [[\c]] or [[\C]]) .. (vim.o.magic and [[\m]] or [[\M]]) .. pattern
+  local pattern = search_pattern(st)
+  if not pattern or #visible == 0 then return nil, nil end
   local ok, matches = pcall(vim.fn.matchbufline, buf, pattern, visible[1], visible[#visible])
   if not ok then return nil, nil end
   local shown = {}
@@ -520,6 +525,30 @@ local function marks_for(buf, view)
   return marks
 end
 
+--- What the scrollbar marks besides annotations: every line matching the search,
+--- marks a-z and ' (where '' returns to), and the cursor line (not in pager mode).
+local function scrollbar_for(buf, view)
+  local st = states[buf]
+  local bar = { width = scrollbar_width(view.width), marks = {} }
+  local pattern = search_pattern(st)
+  if pattern and (st.search_lines or {}).pattern ~= pattern then
+    local ok, matches = pcall(vim.fn.matchbufline, buf, pattern, 1, '$')
+    local lines = {}
+    for _, m in ipairs(ok and matches or {}) do
+      if lines[#lines] ~= m.lnum then lines[#lines + 1] = m.lnum end
+    end
+    st.search_lines = { pattern = pattern, lines = lines }
+  end
+  bar.search = pattern and st.search_lines.lines or nil
+  for _, m in ipairs(vim.fn.getmarklist(buf)) do
+    if m.mark:match "^'[a-z]$" then bar.marks[#bar.marks + 1] = { m.mark:sub(2), m.pos[2] } end
+  end
+  local back = api.nvim_win_call(st.focus, function() return vim.fn.line "''" end)
+  if back > 0 then bar.marks[#bar.marks + 1] = { "'", back } end
+  if not st.pager then bar.cursor = api.nvim_win_get_cursor(st.focus)[1] end
+  return bar
+end
+
 --- Point the pane at a freshly rendered PNG (the terminal deletes the file).
 local function show(st, png, view)
   local pbuf, grid = st.pane.buf, view.cols .. 'x' .. view.rows
@@ -556,8 +585,8 @@ local function render(buf)
   if st.pager and api.nvim_get_current_win() == st.focus and api.nvim_get_mode().mode:match '^[vV\22]' then st.pager = false end
   local view = view_for(st)
   update_badge(st, view)
-  local marks = marks_for(buf, view)
-  local key = vim.json.encode { view.top, view.width, view.height, marks, st.version }
+  local marks, bar = marks_for(buf, view), scrollbar_for(buf, view)
+  local key = vim.json.encode { view.top, view.width, view.height, marks, bar, st.version }
   if key == st.render_key then return end
   st.view, st.render_key, st.busy = view, key, true
   render_id = render_id + 1
@@ -571,7 +600,7 @@ local function render(buf)
     height = view.height,
     gap = view.layout.gap,
     marks = marks,
-    scrollbar = scrollbar_width(view.width),
+    scrollbar = bar,
     out = png,
   }
   request('render', params, function(err)

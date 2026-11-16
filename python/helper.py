@@ -494,7 +494,16 @@ def render_clip(d, pno, clip, width, marks):
 
 
 GAP_COLOR = (48, 48, 48)
-SCROLLBAR = {"track": (224, 224, 224), "tick": (96, 96, 96), "thumb": (80, 80, 80), "thumb_tick": (240, 240, 240)}
+# Scrollbar colours (RGB 0-1). The track continues the gap between pages.
+SCROLLBAR = {
+    "track": tuple(c / 255 for c in GAP_COLOR),
+    "page": (0.36, 0.36, 0.36),
+    "thumb": (1, 1, 1),
+    "search": (1, 0.62, 0.26),
+    "cursor": (0.54, 0.72, 1),
+    "mark": (0.9, 0.9, 0.9),
+    "mark_text": (0.1, 0.1, 0.12),
+}
 
 
 def page_heights(d, width):
@@ -529,42 +538,85 @@ def render_view(d, width, height, top, gap, marks):
     return out
 
 
-def scrollbar(pix, d, top, gap, width):
-    """Document-wide scrollbar `width` px wide on the right edge of `pix`: the thumb
-    is the visible part of the stacked pages, with ticks at page boundaries."""
+def scrollbar(pix, d, top, gap, bar):
+    """Document-wide scrollbar bar["width"] px wide over the right edge of `pix`, for
+    pages stacked as in render_view: page boundaries; annotations from the left in
+    their own colour, darker at the end when they carry a note; lines matching the
+    search (bar["search"]: [lnum]) from the right; the thumb over the part in view;
+    the cursor line (bar["cursor"]) across; and marks (bar["marks"]: [[name, lnum]])
+    as labelled pills. Drawn as vectors on a page the bar's size, then rasterized."""
+    bw, h = bar["width"], pix.height
     heights = page_heights(d, pix.width)
-    total = sum(heights) + gap * (len(heights) - 1)
-    h = pix.height
-    ox = pix.width - width
-    samples, stride = pix.samples_mv, pix.stride
+    tops = [0.0]
+    for height in heights[:-1]:
+        tops.append(tops[-1] + height + gap)
+    scale = h / (tops[-1] + heights[-1])  # bar px per doc px
 
-    def bar(y0, y1, color, inset=0):
-        # Both set_rect() and clear_with(bbox) loop over individual samples in
-        # Python in PyMuPDF 1.26. Write whole RGB scanlines instead.
-        rect = pymupdf.IRect(ox + inset, y0, ox + width - inset, y1) & pix.irect
-        if rect.is_empty:
-            return
-        row = bytes(color) * rect.width
-        offset = rect.y0 * stride + rect.x0 * 3
-        for _ in range(rect.height):
-            samples[offset : offset + len(row)] = row
-            offset += stride
+    def at(pno, y):  # bar y of page-space y on page pno
+        return (tops[pno] + y * pix.width / d.doc[pno].rect.width) * scale
 
-    bar(0, h, SCROLLBAR["track"])
-    y0 = min(round(h * top / total), h - 6)
-    y1 = min(max(y0 + 6, round(h * (top + h) / total)), h)
-    bar(y0, y1, SCROLLBAR["thumb"], inset=2)
-    # Ticks go over the thumb too, in a light colour there, so the boundaries of
-    # the pages in view stay visible. Ticks closer than 3 thicknesses would merge
-    # into a band; skip them.
-    thick = max(2, round(width / 12))
-    if h * min(heights) / total >= 3 * thick:
-        y = 0
-        for height in heights[:-1]:
-            y += height + gap
-            mid = round(h * y / total)
-            on_thumb = y0 <= mid < y1
-            bar(mid - thick // 2, mid - thick // 2 + thick, SCROLLBAR["thumb_tick" if on_thumb else "tick"], inset=2 if on_thumb else 0)
+    def span(y0, y1, least):  # [y0, y1] grown to at least `least` px tall, kept in the bar
+        grow = max(0, least - (y1 - y0)) / 2
+        y0, y1 = y0 - grow, y1 + grow
+        shift = max(0, -y0) - max(0, y1 - h)
+        return y0 + shift, y1 + shift
+
+    def line(lnum, size):  # `size` px centred on text line lnum
+        pno, y0, y1, _ = d.info[lnum - 1]
+        y = at(pno, (y0 + y1) / 2)
+        return span(y, y, size)
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=bw, height=h)
+    s = page.new_shape()
+
+    def rect(x0, x1, ys, color, r=0):
+        y0, y1 = round(ys[0]), max(round(ys[1]), round(ys[0]) + 1)  # whole pixels stay crisp
+        s.draw_rect(pymupdf.Rect(x0, y0, x1, y1), radius=(r / (x1 - x0), r / (y1 - y0)) if r else None)
+        s.finish(fill=color, color=None)
+
+    rect(0, bw, (0, h), SCROLLBAR["track"])
+    if min(heights) * scale >= 4:  # closer lines would merge into a band
+        for t in tops[1:]:
+            rect(3, bw - 3, span((t - gap / 2) * scale, (t - gap / 2) * scale, 1), SCROLLBAR["page"])
+    mid = bw / 2
+    for pno, pg in enumerate(d.doc):
+        for annot in pg.annots(types=SUPPORTED):
+            r = annot.rect * pg.rotation_matrix
+            ys = span(at(pno, r.y0), at(pno, r.y1), 3)
+            color = annot.colors["stroke"] or SCROLLBAR["mark"]
+            rect(2, mid, ys, color, r=1)
+            if annot.info.get("content"):
+                rect(mid - 3, mid, ys, tuple(c * 0.55 for c in color))
+    tick = max(2, bw / 10)
+    for lnum in bar.get("search", ()):
+        rect(mid + 1, bw - 2, line(lnum, tick), SCROLLBAR["search"])
+    pill = max(10, bw * 0.9)
+    labels = []
+    for name, lnum in bar.get("marks", ()):
+        ys = line(lnum, pill)
+        rect(1, bw - 1, ys, SCROLLBAR["mark"], r=pill / 2.5)
+        labels.append((name, sum(ys) / 2))
+    s.commit()
+    size = pill * 0.68
+    for name, y in labels:
+        x = (bw - pymupdf.get_text_length(name, "hebo", size)) / 2
+        page.insert_text((x, y + size * 0.36), name, fontsize=size, fontname="hebo", color=SCROLLBAR["mark_text"])
+    # Where you are goes on top: the thumb, at least a pill and a margin tall so a mark
+    # in view never hides it, outlined in the cursor's colour, then the cursor line.
+    s = page.new_shape()
+    y0, y1 = span(top * scale, (top + h) * scale, pill + 6)
+    s.draw_rect(pymupdf.Rect(1, y0 + 0.5, bw - 1, y1 - 0.5), radius=(4 / (bw - 2), 4 / (y1 - y0)))
+    s.finish(fill=SCROLLBAR["thumb"], fill_opacity=0.2, color=SCROLLBAR["cursor"], width=1.5)
+    if bar.get("cursor"):
+        # A dark edge keeps the rule visible over the thumb and markers.
+        y0, y1 = line(bar["cursor"], max(3, bw / 6) + 2)
+        rect(0, bw, (y0, y1), SCROLLBAR["track"])
+        rect(0, bw, (y0 + 1, y1 - 1), SCROLLBAR["cursor"])
+    s.commit()
+    strip = page.get_pixmap(alpha=False)
+    strip.set_origin(pix.width - bw, 0)
+    pix.copy(strip, strip.irect)
 
 
 def m_open(p):
