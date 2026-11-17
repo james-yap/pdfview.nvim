@@ -62,7 +62,7 @@ In cursor mode these keys do what they do in Vim, and `u` undoes annotation chan
 | Mouse wheel | Scroll |
 | `zt` / `zz` / `zb` | Put the cursor line near the top / middle / bottom |
 | `H` / `M` / `L` | Move to a line near the top / middle / bottom |
-| `]p` / `[p`, `<PageDown>` / `<PageUp>` | Go to the top of the next / previous page; inside a page, `[p` goes to its top first (takes a count) |
+| `]p` / `[p`, `<C-j>` / `<C-k>`, `<PageDown>` / `<PageUp>` | Go to the top of the next / previous page; inside a page, `[p` goes to its top first (takes a count) |
 | Left click | Move the cursor to the character you clicked |
 
 Scrolling keeps the cursor on screen. In other windows on the same buffer (see
