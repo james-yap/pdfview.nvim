@@ -182,6 +182,18 @@ class PageViewTest(unittest.TestCase):
         broken = helper.m_typst({**params, "source": "fine\n\n$ x^ $"})
         self.assertEqual([(d["lnum"], d["col"]) for d in broken["diagnostics"]], [(3, 4)])
 
+    def test_typst_shows_inline_math_taller_than_its_line(self):
+        # Limits on inline math reach past the line box Typst sizes the page by. Given room
+        # by a padded block, the same note must show the same ink.
+        out = os.path.join(self.tmp.name, "note.png")
+        params = {"color": 0xFFFFFF, "cell": [10, 22], "cols": 60, "rows": 10, "out": out}
+        for math in ["$integral_0^1 x dif x$", "$sum_(i=0)^n i$"]:
+            ink = []
+            for source in [math, "#block(inset: 8pt)[%s]" % math]:
+                helper.m_typst({**params, "source": source})
+                ink.append(sum(pymupdf.Pixmap(out).samples[3::4]))
+            self.assertAlmostEqual(ink[0] / ink[1], 1, delta=0.005, msg=f"{math} is cut off")
+
     @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
     def test_page_view_interactions(self):
         path = Path(self.tmp.name) / "columns.pdf"

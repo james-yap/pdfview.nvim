@@ -991,7 +991,15 @@ def m_typst(p):
         ]
         return {"diagnostics": found or [{"lnum": 1, "col": 1, "message": e.message}]}
     with src, pymupdf.open() as doc:
-        r = src[0].rect
+        # Typst sizes the page by line boxes, which end at the baseline: tall inline math
+        # such as $integral_0^1$ draws past the page's edge. Grow the page over all of the
+        # ink, as a page shown in another is clipped to its box.
+        page = src[0]
+        r = page.rect
+        for _, box in page.get_bboxlog():
+            r |= pymupdf.Rect(box) + (-1, -1, 1, 1)
+        page.set_mediabox(r * ~page.transformation_matrix)
+        r = page.rect
         scale = min(zoom, p["cols"] * cw / r.width, p["rows"] * ch / r.height)
         cols, rows = math.ceil(r.width * scale / cw), math.ceil(r.height * scale / ch)
         out = doc.new_page(width=cols * cw / scale, height=rows * ch / scale)
