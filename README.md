@@ -141,6 +141,8 @@ require('pdfview').setup {
   known limitations.
 - [Development](docs/development.md): how it works, running the tests, recording the
   demos.
+- [Benchmarking](docs/benchmarking.md): timing each frame, the scroll benchmark and
+  profiling a live session.
 
 ## License
 

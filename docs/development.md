@@ -3,6 +3,7 @@
 - [How it works](#how-it-works)
 - [Filetypes and highlight groups](#filetypes-and-highlight-groups)
 - [Tests](#tests)
+- [Benchmarking](#benchmarking)
 - [Demos](#demos)
 
 ## How it works
@@ -20,7 +21,7 @@ flowchart TB
     helper["python/helper.py<br/>PyMuPDF + typst-py, run by uv"]
     pdf[("file.pdf")]
     term["kitty / Ghostty"]
-    lua <-- "JSON lines: requests out,<br/>text layer and PNGs back" --> helper
+    lua <-- "JSON lines: requests out,<br/>text layer and frame files back" --> helper
     helper -- "read, incremental save" --> pdf
     lua -- "kitty graphics protocol" --> term
 ```
@@ -40,10 +41,11 @@ closes the PDF window.
 
 **Drawing.** Images use the kitty graphics protocol with Unicode placeholders
 (`lua/pdfview/kitty.lua`). The image is drawn through placeholder characters in a
-buffer, so splits and floats cover it correctly. Rendered pages reach the terminal as
-temporary files, which the terminal deletes after reading. The scrollbar is drawn as
-vector shapes on a small page and turned into pixels in one call, which keeps
-navigation fast.
+buffer, so splits and floats cover it correctly. Frames reach the terminal as temporary
+files of raw RGB, which the terminal deletes after reading. Each frame replaces the
+pane's image under the same id. The helper rasterizes each page once and keeps it, and
+it keeps the scrollbar too, so a scroll step mostly copies pixels. The scrollbar is
+drawn as vector shapes on a small page and turned into pixels in one call.
 
 ## Filetypes and highlight groups
 
@@ -60,12 +62,22 @@ uv run --with 'pymupdf>=1.26,<1.27' --with 'typst>=0.15,<0.16' tests/test_helper
 ```
 
 This runs the helper tests and a headless Neovim scenario that uses the real helper,
-with only terminal graphics replaced. They cover page layout and clipping, hit testing,
-snapshots, the cursor, selections, note previews, Typst notes (live preview,
-diagnostics, rendered hover), annotation undo and redo, the modified flag, and keeping
-annotations intact through saves, including repaired PDFs.
+with only terminal graphics replaced. They cover page layout and clipping, the page and
+scrollbar caches, hit testing, snapshots, the cursor, selections, note previews, Typst
+notes (live preview, diagnostics, rendered hover), annotation undo and redo, the
+modified flag, and keeping annotations intact through saves, including repaired PDFs.
 
 To include the Leap test, set `PDFVIEW_LEAP_RTP` to your `leap.nvim` directory.
+
+## Benchmarking
+
+```sh
+nvim --headless -u NONE -i NONE -l tests/bench.lua docs/demo/notes.pdf
+```
+
+This times each stage of a frame while scrolling. Set `PDFVIEW_PROFILE=1` to record
+frames in a live session. [benchmarking.md](benchmarking.md) explains the stages, the
+caches and the reference numbers.
 
 ## Demos
 
