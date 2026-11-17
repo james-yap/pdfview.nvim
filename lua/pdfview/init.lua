@@ -542,11 +542,17 @@ local function scrollbar_for(buf, view)
     st.search_lines = { pattern = pattern, lines = lines }
   end
   bar.search = pattern and st.search_lines.lines or nil
-  for _, m in ipairs(vim.fn.getmarklist(buf)) do
-    if m.mark:match "^'[a-z]$" then bar.marks[#bar.marks + 1] = { m.mark:sub(2), m.pos[2] } end
+  -- '' is the window's previous-context mark, which Vim keeps across buffers: after
+  -- :buffer from another file (as oil.nvim opens files) it holds that file's line,
+  -- shifted by the PDF's text being set below it, so it can lie past the end.
+  local last = api.nvim_buf_line_count(buf)
+  local function add(name, lnum)
+    if lnum >= 1 and lnum <= last then bar.marks[#bar.marks + 1] = { name, lnum } end
   end
-  local back = api.nvim_win_call(st.focus, function() return vim.fn.line "''" end)
-  if back > 0 then bar.marks[#bar.marks + 1] = { "'", back } end
+  for _, m in ipairs(vim.fn.getmarklist(buf)) do
+    if m.mark:match "^'[a-z]$" then add(m.mark:sub(2), m.pos[2]) end
+  end
+  add("'", api.nvim_win_call(st.focus, function() return vim.fn.line "''" end))
   if not st.pager then bar.cursor = api.nvim_win_get_cursor(st.focus)[1] end
   return bar
 end

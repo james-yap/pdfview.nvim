@@ -212,6 +212,16 @@ class PageViewTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
+    def test_pdf_opened_with_buffer_from_longer_file_renders(self):
+        root = Path(__file__).parents[1]
+        env = {**os.environ, "PDFVIEW_TEST_PDF": str(self.path)}
+        result = subprocess.run(
+            ["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-c", "luafile tests/test_buffer_switch.lua"],
+            cwd=root, env=env, text=True, capture_output=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 def build_annotated_pdf(path, rich=False):
     """Page 1: 'alpha beta gamma' under a Highlight (custom colour, opacity,
