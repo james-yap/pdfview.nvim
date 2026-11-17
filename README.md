@@ -100,7 +100,7 @@ motions, search and visual selection work on the page text. `<Esc>` goes back.
 | --- | --- |
 | `j` / `k`, `d` / `u` | Scroll (pager mode) |
 | `c` / `<Esc>` | Cursor mode / back to pager mode |
-| `]p` / `[p` | Next / previous page |
+| `]p` / `[p`, `<C-j>` / `<C-k>` | Next / previous page |
 | `/`, `n` / `N` | Search |
 | `<leader>ph` / `pu` / `ps` | Highlight / underline / strike out the selection |
 | `<leader>pn` | Write or edit a note |
@@ -122,7 +122,7 @@ require('pdfview').setup {
   keys = {
     prefix = '<leader>p', -- prefix for the annotation and snapshot keys
     next_annotation = ']a', prev_annotation = '[a',
-    next_page = { ']p', '<PageDown>' }, prev_page = { '[p', '<PageUp>' },
+    next_page = { ']p', '<C-j>', '<PageDown>' }, prev_page = { '[p', '<C-k>', '<PageUp>' },
     hover = 'K', undo = 'u', redo = '<C-r>',
     leap = nil, -- nil: your keys for <Plug>(leap); a string: this key; false: off
   },
