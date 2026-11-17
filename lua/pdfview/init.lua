@@ -557,25 +557,36 @@ local function scrollbar_for(buf, view)
   return bar
 end
 
---- Point the pane at a freshly rendered PNG (the terminal deletes the file).
-local function show(st, png, view)
+--- Point the pane at a freshly rendered frame (the terminal deletes the file). While
+--- the pane keeps its size, each frame replaces its image in place, so its cells stay
+--- as they are and Nvim has nothing to redraw. A new size needs a new image: Ghostty
+--- keeps showing nothing for a replaced image placed at another size.
+local function show(st, frame, view)
   local pbuf, grid = st.pane.buf, view.cols .. 'x' .. view.rows
-  local id = kitty.show(png, view.cols, view.rows)
+  local reuse = st.grid == grid and st.image or nil
+  local id = kitty.show(frame, view.cols, view.rows, { size = { view.width, view.height }, id = reuse })
   if st.grid ~= grid then
     vim.bo[pbuf].modifiable = true
     api.nvim_buf_set_lines(pbuf, 0, -1, false, kitty.placeholders(view.cols, view.rows))
     vim.bo[pbuf].modifiable = false
     st.grid = grid
   end
+  if id == st.image then return end
   api.nvim_buf_clear_namespace(pbuf, NS, 0, -1)
   api.nvim_buf_set_extmark(pbuf, NS, 0, 0, { end_row = view.rows, end_col = 0, strict = false, hl_group = kitty.hl(id) })
-  -- Free the previous image only once the cells point at the new one, to avoid flicker.
+  -- Free a previous image only once the cells point at the new one, to avoid flicker.
   if st.image then
     vim.cmd.redraw()
     kitty.delete(st.image)
   end
   st.image = id
 end
+
+-- Frame timings while $PDFVIEW_PROFILE is set (docs/benchmarking.md): ms per stage.
+local profile = { frames = {} }
+local PROFILE_FRAMES = 1000
+
+local function ms_since(t) return (uv.hrtime() - t) / 1e6 end
 
 local render_id = 0
 
@@ -590,19 +601,24 @@ local function render(buf)
     st.again = true
     return
   end
+  local t0 = uv.hrtime()
   -- v, V and <C-v> in pager mode start a selection in cursor mode. Checked here, as
   -- render also runs from the input hook while another ModeChanged handler waits.
   if st.pager and api.nvim_get_current_win() == st.focus and api.nvim_get_mode().mode:match '^[vV\22]' then st.pager = false end
   local view = view_for(st)
   update_badge(st, view)
   local marks, bar = marks_for(buf, view), scrollbar_for(buf, view)
-  local key = vim.json.encode { view.top, view.width, view.height, marks, bar, st.version }
+  -- Every key typed comes through here: the search matches enter the key as their
+  -- pattern, as encoding thousands of matching lines each time would cost more.
+  local search = bar.search and st.search_lines.pattern
+  local key = vim.json.encode { view.top, view.width, view.height, marks, bar.width, bar.marks, bar.cursor, search, st.version }
   if key == st.render_key then return end
   st.view, st.render_key, st.busy = view, key, true
   render_id = render_id + 1
   -- kitty and Ghostty only accept temporary files named like this, in $TMPDIR.
-  local png = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-%d.png'):format(vim.fn.getpid(), render_id))
+  local frame = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-pdfview-%d-%d.rgb'):format(vim.fn.getpid(), render_id))
   local pane_buf = st.pane.buf
+  local profiling = (vim.env.PDFVIEW_PROFILE or '') ~= ''
   local params = {
     key = buf,
     top = view.top,
@@ -611,18 +627,36 @@ local function render(buf)
     gap = view.layout.gap,
     marks = marks,
     scrollbar = bar,
-    out = png,
+    out = frame,
+    profile = profiling or nil,
   }
-  request('render', params, function(err)
+  local prepare, t1 = ms_since(t0), uv.hrtime()
+  request('render', params, function(err, res)
+    local t2 = uv.hrtime()
     st.busy = false
     if err then
       st.render_key = nil
-      os.remove(png)
+      os.remove(frame)
       notify(err, vim.log.levels.ERROR)
     elseif states[buf] == st and pane_valid(st) and st.pane.buf == pane_buf then
-      show(st, png, view)
+      show(st, frame, view)
     else
-      os.remove(png)
+      os.remove(frame)
+    end
+    if profiling and res and res.profile then
+      local p = res.profile
+      local helper_ms = (t2 - t1) / 1e6
+      table.insert(profile.frames, {
+        prepare = prepare,
+        pages = p.pages,
+        scrollbar = p.scrollbar,
+        write = p.write,
+        ipc = helper_ms - p.pages - p.scrollbar - p.write,
+        show = ms_since(t2),
+        total = ms_since(t0),
+        rasterized = p.rasterized,
+      })
+      if #profile.frames > PROFILE_FRAMES then table.remove(profile.frames, 1) end
     end
     local again = st.again
     st.again = nil
@@ -1591,6 +1625,29 @@ load = function(buf)
     end)
   end
   refresh(buf)
+end
+
+--- Summary of the frames rendered while $PDFVIEW_PROFILE was set: their count, the
+--- pages rasterized for them, and per stage the median, 95th percentile and
+--- maximum in ms. `opts.reset` starts a new recording. See docs/benchmarking.md.
+---@param opts? {reset?: boolean}
+function M.profile(opts)
+  local frames = profile.frames
+  if opts and opts.reset then profile.frames = {} end
+  local summary = { frames = #frames, rasterized = 0, stages = {} }
+  for _, f in ipairs(frames) do
+    summary.rasterized = summary.rasterized + f.rasterized
+  end
+  for _, stage in ipairs { 'prepare', 'pages', 'scrollbar', 'write', 'ipc', 'show', 'total' } do
+    local values = {}
+    for i, f in ipairs(frames) do
+      values[i] = f[stage]
+    end
+    table.sort(values)
+    local function at(q) return values[math.max(1, math.ceil(q * #values))] end
+    if #values > 0 then summary.stages[stage] = { median = at(0.5), p95 = at(0.95), max = values[#values] } end
+  end
+  return summary
 end
 
 ---@param opts? pdfview.Config

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import pymupdf
@@ -312,7 +313,7 @@ class AnnotationCase(unittest.TestCase):
 
 class NoteMarkerTest(AnnotationCase):
     def render(self):
-        return helper.render_clip(self.d, 0, self.d.doc[0].rect, 600, [])
+        return helper.render_clip(self.d, 0, self.d.doc[0].rect, 600)
 
     def test_only_annotations_with_a_note_get_a_mark_just_past_their_end(self):
         made = self.annotate()  # "beta", no note yet
@@ -334,6 +335,37 @@ class NoteMarkerTest(AnnotationCase):
         self.assertLess(min(ys), word.y0 + word.height / 2)
         self.call("set_contents", page=0, xref=made["xref"], contents="")
         self.assertEqual(self.render().samples, bare.samples)
+
+
+class RenderCacheTest(AnnotationCase):
+    """Pages and the scrollbar are kept between frames, yet must follow every edit."""
+
+    def frame(self):
+        pix = helper.render_view(self.d, 600, 400, 0, 10, [])
+        helper.scrollbar(pix, self.d, 0, 10, {"width": 20})
+        return pix
+
+    def bar(self, pix):
+        return [pix.pixel(x, y) for y in range(pix.height) for x in range(pix.width - 20, pix.width)]
+
+    def test_edits_and_undo_show_on_the_page_and_the_scrollbar(self):
+        before = self.frame()
+        self.annotate()
+        after = self.frame()
+        self.assertTrue(after.samples != before.samples, "the page kept the old annotations")
+        self.assertTrue(self.bar(after) != self.bar(before), "the scrollbar kept the old annotations")
+        self.call("restore", state=self.s0)
+        self.assertTrue(self.frame().samples == before.samples, "undo did not restore the frame")
+
+    def test_pages_too_large_to_keep_render_like_kept_ones(self):
+        marks = [{"ranges": [[self.line(0), 0, 3], [self.line(1), 2, 5]], "color": 0xFF0000}]
+        height = round(helper.page_heights(self.d, 401)[0]) + 200
+        for top in (0, 37):
+            kept = helper.render_view(self.d, 401, height, top, 10, marks)
+            self.d.changed()
+            with mock.patch.object(helper, "RASTER_CACHE_BYTES", 0):
+                clipped = helper.render_view(self.d, 401, height, top, 10, marks)
+            self.assertTrue(clipped.samples == kept.samples, f"top {top}: clipped and kept pages differ")
 
 
 class AnnotationStateTest(AnnotationCase):

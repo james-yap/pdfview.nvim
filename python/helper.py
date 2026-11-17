@@ -19,6 +19,7 @@ returns {state, annots} with every annotation of the document.
 """
 
 import base64
+import collections
 import contextlib
 import functools
 import html
@@ -28,6 +29,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import traceback
 import uuid
 import zlib
@@ -163,6 +165,10 @@ def array_refs(src):
 
 docs = {}
 
+# Whole pages rasterized at the view's width, kept so scrolling only copies pixels.
+# A page alone larger than this is rendered clipped to the view every frame instead.
+RASTER_CACHE_BYTES = 256 << 20
+
 
 class Doc:
     def __init__(self, path):
@@ -170,6 +176,12 @@ class Doc:
         self.doc = pymupdf.open(path)
         if self.doc.needs_pass:
             raise ValueError("encrypted PDFs are not supported")
+        self.sizes = [(page.rect.width, page.rect.height) for page in self.doc]
+        self.rasters = collections.OrderedDict()  # (pno, width) -> Pixmap, least recently used first
+        self.raster_bytes = 0
+        self.rasterized = 0  # whole pages rendered so far, for profiling
+        self.version = 0  # bumped whenever annotations change
+        self.bar_cache = None  # (key, Pixmap): the scrollbar without thumb and cursor
         self.lines = []  # buffer text, index = lnum - 1
         self.info = []  # [page, y0, y1, is_header] per buffer line
         self.boxes = []  # per buffer line: list of char Rects, None for headers
@@ -199,6 +211,32 @@ class Doc:
         self.opaque = set()  # xrefs never captured: pages and other owners of annotations
         self.base_pages = {}  # pno -> /Annots source when the page was first edited
         self.live_pages = {}
+
+    def changed(self, pno=None):
+        """Annotations changed on page `pno` (None: anywhere): drop what was drawn from them."""
+        self.version += 1
+        for key in [k for k in self.rasters if pno is None or k[0] == pno]:
+            self.raster_bytes -= pixmap_bytes(self.rasters.pop(key))
+
+    def raster(self, pno, width):
+        """Page `pno` with its annotations and note markers, `width` px wide; None when
+        too large to keep."""
+        key = (pno, width)
+        pix = self.rasters.get(key)
+        if pix is not None:
+            self.rasters.move_to_end(key)
+            return pix
+        pw, ph = self.sizes[pno]
+        if width * math.ceil(ph * width / pw) * 3 > RASTER_CACHE_BYTES:
+            return None
+        pix = render_clip(self, pno, (0, 0, pw, ph), width)
+        self.rasterized += 1
+        self.rasters[key] = pix
+        self.raster_bytes += pixmap_bytes(pix)
+        while self.raster_bytes > RASTER_CACHE_BYTES:
+            _, old = self.rasters.popitem(last=False)
+            self.raster_bytes -= pixmap_bytes(old)
+        return pix
 
     def header(self, pno):
         return next(i + 1 for i, info in enumerate(self.info) if info[0] == pno and info[3])
@@ -364,6 +402,7 @@ class Doc:
             self.live_pages[pno] = source = self.read_annots(pno)
             after = set(array_refs(source))
             self.capture(set(targets) | before ^ after)
+            self.changed(pno)
 
     def refresh(self, after_save=False):
         """Track dropped objects after reopening. A save can re-encode surviving
@@ -442,6 +481,8 @@ class Doc:
         except BaseException:
             self.refresh()
             raise
+        finally:
+            self.changed()
 
     def all_annots(self):
         return [a for pno in range(len(self.doc)) for a in self.annots(pno)]
@@ -478,7 +519,8 @@ def note_marker(pix, annot, matrix):
         pix.set_rect(box, tuple(round(c * 140) for c in color))
 
 
-def render_clip(d, pno, clip, width, marks):
+def render_clip(d, pno, clip, width):
+    """Region `clip` (page points) of page `pno` with annotations and note markers, `width` px wide."""
     clip = pymupdf.Rect(clip)
     zoom = width / clip.width
     matrix = pymupdf.Matrix(zoom, zoom)
@@ -487,9 +529,6 @@ def render_clip(d, pno, clip, width, marks):
     for annot in page.annots(types=SUPPORTED):
         if annot.vertices and annot.info.get("content"):
             note_marker(pix, annot, matrix)
-    for mark in marks or []:
-        for lnum, cs, ce in mark["ranges"]:
-            tint(pix, d.range_rect(lnum, cs, ce), matrix, mark["color"], mark.get("outline", False))
     return pix
 
 
@@ -508,7 +547,7 @@ SCROLLBAR = {
 
 def page_heights(d, width):
     """Page heights in pixels when each page is scaled to `width` pixels."""
-    return [page.rect.height * width / page.rect.width for page in d.doc]
+    return [ph * width / pw for pw, ph in d.sizes]
 
 
 def render_view(d, width, height, top, gap, marks):
@@ -523,17 +562,24 @@ def render_view(d, width, height, top, gap, marks):
         if y >= top + height:
             break
         if y + h > top:
-            pw = d.doc[pno].rect.width
-            scale = width / pw
-            a, b = max(top, y), min(top + height, y + h)
-            page_marks = []
-            for mark in marks or []:
-                ranges = [r for r in mark["ranges"] if d.info[r[0] - 1][0] == pno]
-                if ranges:
-                    page_marks.append({**mark, "ranges": ranges})
-            pix = render_clip(d, pno, (0, (a - y) / scale, pw, (b - y) / scale), width, page_marks)
-            pix.set_origin(0, round(a - top))
+            pw = d.sizes[pno][0]
+            zoom = width / pw
+            pix = d.raster(pno, width)
+            if pix is None:
+                a, b = max(top, y), min(top + height, y + h)
+                pix = render_clip(d, pno, (0, (a - y) / zoom, pw, (b - y) / zoom), width)
+                # Page pixel row pix.y (the clip's first row) lands on view row round(a - top).
+                offset = round(a - top) - pix.y
+                pix.set_origin(0, round(a - top))
+            else:
+                offset = round(y - top)
+                pix.set_origin(0, offset)
             out.copy(pix, pymupdf.IRect(pix.irect) & out.irect)
+            matrix = pymupdf.Matrix(zoom, 0, 0, zoom, 0, offset)  # page points -> view pixels
+            for mark in marks or []:
+                for lnum, cs, ce in mark["ranges"]:
+                    if d.info[lnum - 1][0] == pno:
+                        tint(out, d.range_rect(lnum, cs, ce), matrix, mark["color"], mark.get("outline", False))
         y += h + gap
     return out
 
@@ -544,7 +590,9 @@ def scrollbar(pix, d, top, gap, bar):
     their own colour, darker at the end when they carry a note; lines matching the
     search (bar["search"]: [lnum]) from the right; the thumb over the part in view;
     the cursor line (bar["cursor"]) across; and marks (bar["marks"]: [[name, lnum]])
-    as labelled pills. Drawn as vectors on a page the bar's size, then rasterized."""
+    as labelled pills. Drawn as vectors on a page the bar's size, then rasterized. All
+    but the thumb and the cursor line is kept (d.bar_cache) until it would change;
+    those two are drawn over a copy of it."""
     bw, h = bar["width"], pix.height
     heights = page_heights(d, pix.width)
     tops = [0.0]
@@ -553,7 +601,7 @@ def scrollbar(pix, d, top, gap, bar):
     scale = h / (tops[-1] + heights[-1])  # bar px per doc px
 
     def at(pno, y):  # bar y of page-space y on page pno
-        return (tops[pno] + y * pix.width / d.doc[pno].rect.width) * scale
+        return (tops[pno] + y * pix.width / d.sizes[pno][0]) * scale
 
     def span(y0, y1, least):  # [y0, y1] grown to at least `least` px tall, kept in the bar
         grow = max(0, least - (y1 - y0)) / 2
@@ -566,44 +614,50 @@ def scrollbar(pix, d, top, gap, bar):
         y = at(pno, (y0 + y1) / 2)
         return span(y, y, size)
 
-    doc = pymupdf.open()
-    page = doc.new_page(width=bw, height=h)
-    s = page.new_shape()
-
-    def rect(x0, x1, ys, color, r=0):
+    def rect(s, x0, x1, ys, color, r=0):
         y0, y1 = round(ys[0]), max(round(ys[1]), round(ys[0]) + 1)  # whole pixels stay crisp
         s.draw_rect(pymupdf.Rect(x0, y0, x1, y1), radius=(r / (x1 - x0), r / (y1 - y0)) if r else None)
         s.finish(fill=color, color=None)
 
-    rect(0, bw, (0, h), SCROLLBAR["track"])
-    if min(heights) * scale >= 4:  # closer lines would merge into a band
-        for t in tops[1:]:
-            rect(3, bw - 3, span((t - gap / 2) * scale, (t - gap / 2) * scale, 1), SCROLLBAR["page"])
-    mid = bw / 2
-    for pno, pg in enumerate(d.doc):
-        for annot in pg.annots(types=SUPPORTED):
-            r = annot.rect * pg.rotation_matrix
-            ys = span(at(pno, r.y0), at(pno, r.y1), 3)
-            color = annot.colors["stroke"] or SCROLLBAR["mark"]
-            rect(2, mid, ys, color, r=1)
-            if annot.info.get("content"):
-                rect(mid - 3, mid, ys, tuple(c * 0.55 for c in color))
-    tick = max(2, bw / 10)
-    for lnum in bar.get("search", ()):
-        rect(mid + 1, bw - 2, line(lnum, tick), SCROLLBAR["search"])
     pill = max(10, bw * 0.9)
-    labels = []
-    for name, lnum in bar.get("marks", ()):
-        ys = line(lnum, pill)
-        rect(1, bw - 1, ys, SCROLLBAR["mark"], r=pill / 2.5)
-        labels.append((name, sum(ys) / 2))
-    s.commit()
-    size = pill * 0.68
-    for name, y in labels:
-        x = (bw - pymupdf.get_text_length(name, "hebo", size)) / 2
-        page.insert_text((x, y + size * 0.36), name, fontsize=size, fontname="hebo", color=SCROLLBAR["mark_text"])
+    search, marks = tuple(bar.get("search", ())), tuple(tuple(m) for m in bar.get("marks", ()))
+    key = (pix.width, h, gap, bw, d.version, search, marks)
+    if d.bar_cache is None or d.bar_cache[0] != key:
+        doc = pymupdf.open()
+        page = doc.new_page(width=bw, height=h)
+        s = page.new_shape()
+        rect(s, 0, bw, (0, h), SCROLLBAR["track"])
+        if min(heights) * scale >= 4:  # closer lines would merge into a band
+            for t in tops[1:]:
+                rect(s, 3, bw - 3, span((t - gap / 2) * scale, (t - gap / 2) * scale, 1), SCROLLBAR["page"])
+        mid = bw / 2
+        for pno, pg in enumerate(d.doc):
+            for annot in pg.annots(types=SUPPORTED):
+                r = annot.rect * pg.rotation_matrix
+                ys = span(at(pno, r.y0), at(pno, r.y1), 3)
+                color = annot.colors["stroke"] or SCROLLBAR["mark"]
+                rect(s, 2, mid, ys, color, r=1)
+                if annot.info.get("content"):
+                    rect(s, mid - 3, mid, ys, tuple(c * 0.55 for c in color))
+        tick = max(2, bw / 10)
+        for lnum in search:
+            rect(s, mid + 1, bw - 2, line(lnum, tick), SCROLLBAR["search"])
+        labels = []
+        for name, lnum in marks:
+            ys = line(lnum, pill)
+            rect(s, 1, bw - 1, ys, SCROLLBAR["mark"], r=pill / 2.5)
+            labels.append((name, sum(ys) / 2))
+        s.commit()
+        size = pill * 0.68
+        for name, y in labels:
+            x = (bw - pymupdf.get_text_length(name, "hebo", size)) / 2
+            page.insert_text((x, y + size * 0.36), name, fontsize=size, fontname="hebo", color=SCROLLBAR["mark_text"])
+        d.bar_cache = (key, page.get_pixmap(alpha=False))
+    strip = pymupdf.Pixmap(d.bar_cache[1], 0)  # a copy, still without alpha: the thumb and cursor line go over it
     # Where you are goes on top: the thumb, at least a pill and a margin tall so a mark
     # in view never hides it, outlined in the cursor's colour, then the cursor line.
+    doc = pymupdf.open()
+    page = doc.new_page(width=bw, height=h)
     s = page.new_shape()
     y0, y1 = span(top * scale, (top + h) * scale, pill + 6)
     s.draw_rect(pymupdf.Rect(1, y0 + 0.5, bw - 1, y1 - 0.5), radius=(4 / (bw - 2), 4 / (y1 - y0)))
@@ -611,12 +665,25 @@ def scrollbar(pix, d, top, gap, bar):
     if bar.get("cursor"):
         # A dark edge keeps the rule visible over the thumb and markers.
         y0, y1 = line(bar["cursor"], max(3, bw / 6) + 2)
-        rect(0, bw, (y0, y1), SCROLLBAR["track"])
-        rect(0, bw, (y0 + 1, y1 - 1), SCROLLBAR["cursor"])
+        rect(s, 0, bw, (y0, y1), SCROLLBAR["track"])
+        rect(s, 0, bw, (y0 + 1, y1 - 1), SCROLLBAR["cursor"])
     s.commit()
-    strip = page.get_pixmap(alpha=False)
+    draw_over(strip, page)
     strip.set_origin(pix.width - bw, 0)
     pix.copy(strip, strip.irect)
+
+
+def draw_over(pix, page):
+    """Rasterize `page` over the pixels already in `pix` (origin 0, 0): a page has no
+    background, so only what is drawn on it covers them."""
+    mupdf = pymupdf.mupdf
+    dev = mupdf.fz_new_draw_device(mupdf.FzMatrix(), pix.this)
+    mupdf.fz_run_page(pymupdf._as_fz_page(page), dev, mupdf.FzMatrix(), mupdf.FzCookie())
+    mupdf.fz_close_device(dev)
+
+
+def pixmap_bytes(pix):
+    return pix.stride * pix.height
 
 
 def m_open(p):
@@ -628,7 +695,7 @@ def m_open(p):
     return {
         "lines": d.lines,
         "info": d.info,
-        "pages": [[page.rect.width, page.rect.height] for page in d.doc],
+        "pages": [list(size) for size in d.sizes],
         "annots": d.all_annots(),
         "state": d.state(),
     }
@@ -641,12 +708,26 @@ def m_close(p):
 
 
 def m_render(p):
+    """Write the view to p["out"] as raw 8-bit RGB, rows top to bottom, no padding:
+    no encoding to wait for here or decoding in the terminal. With p["profile"] the
+    reply has the time of each stage in ms and how many pages were rasterized."""
     d = docs[p["key"]]
+    t0, rasterized = time.perf_counter(), d.rasterized
     pix = render_view(d, p["width"], p["height"], p["top"], p["gap"], p.get("marks"))
+    t1 = time.perf_counter()
     if p.get("scrollbar"):
         scrollbar(pix, d, p["top"], p["gap"], p["scrollbar"])
-    pix.save(p["out"])
-    return {}
+    t2 = time.perf_counter()
+    with open(p["out"], "wb") as f:
+        f.write(pix.samples_mv)
+    t3 = time.perf_counter()
+    if not p.get("profile"):
+        return {}
+
+    def ms(a, b):
+        return round((b - a) * 1000, 3)
+
+    return {"profile": {"pages": ms(t0, t1), "scrollbar": ms(t1, t2), "write": ms(t2, t3), "rasterized": d.rasterized - rasterized}}
 
 
 def m_annotate(p):

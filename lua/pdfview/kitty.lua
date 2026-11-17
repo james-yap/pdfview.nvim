@@ -1,7 +1,7 @@
 -- Kitty graphics protocol with Unicode placeholders (kitty, Ghostty).
 --
--- An image is sent once (a=T, U=1: transmit and create a virtual placement of
--- cols x rows cells). It appears wherever the buffer contains placeholder
+-- An image is transmitted with a virtual placement (a=T, U=1) of cols x rows
+-- cells. It appears wherever the buffer contains placeholder
 -- cells (U+10EEEE + row/column diacritics) whose foreground colour encodes the
 -- image id. Because those cells are ordinary text to Nvim, splits, scrolling
 -- and floating windows cover and clip the image correctly.
@@ -99,15 +99,24 @@ local function command(keys, payload) vim.api.nvim_ui_send('\27_G' .. keys .. (p
 --- Directory the terminal accepts temporary image files from.
 function M.tmpdir() return vim.fs.normalize(os.getenv 'TMPDIR' or '/tmp') end
 
---- Show the PNG at `path` as a new image of cols x rows cells; returns its id.
+--- Show the image in the file at `path` as cols x rows cells; returns its id.
 --- `path` must be in M.tmpdir() and contain "tty-graphics-protocol": the
---- terminal reads it and then deletes it (t=t).
+--- terminal reads it and then deletes it (t=t). The file is a PNG, or with
+--- `opts.size` ({width, height}) raw 8-bit RGB of that many pixels, which
+--- costs neither side any encoding. `opts.id` replaces that image: cells
+--- already showing it show the new one, with nothing for Nvim to redraw.
+---@param opts? {size?: integer[], id?: integer}
 ---@return integer id
-function M.show(path, cols, rows)
-  next_id = (next_id + 1) % ID_COUNT
-  local id = ID_BASE + next_id
-  command(('a=T,U=1,f=100,t=t,q=1,i=%d,c=%d,r=%d'):format(id, cols, rows), vim.base64.encode(path))
-  vim.api.nvim_set_hl(0, M.hl(id), { fg = ('#%06x'):format(id) })
+function M.show(path, cols, rows, opts)
+  opts = opts or {}
+  local id = opts.id
+  if not id then
+    next_id = (next_id + 1) % ID_COUNT
+    id = ID_BASE + next_id
+    vim.api.nvim_set_hl(0, M.hl(id), { fg = ('#%06x'):format(id) })
+  end
+  local format = opts.size and ('f=24,s=%d,v=%d'):format(opts.size[1], opts.size[2]) or 'f=100'
+  command(('a=T,U=1,%s,t=t,q=1,i=%d,c=%d,r=%d'):format(format, id, cols, rows), vim.base64.encode(path))
   return id
 end
 
