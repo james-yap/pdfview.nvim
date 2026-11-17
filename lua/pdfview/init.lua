@@ -557,14 +557,17 @@ local function scrollbar_for(buf, view)
   return bar
 end
 
---- Point the pane at a freshly rendered frame (the terminal deletes the file). While
---- the pane keeps its size, each frame replaces its image in place, so its cells stay
---- as they are and Nvim has nothing to redraw. A new size needs a new image: Ghostty
---- keeps showing nothing for a replaced image placed at another size.
+--- Point the pane at a freshly rendered frame (the terminal deletes the file): raw RGB
+--- of view.width x view.height pixels, or a PNG when the view has no pixel size (the
+--- note preview). While the pane keeps its size, each frame replaces its image in
+--- place, so its cells stay as they are and Nvim has nothing to redraw. A new size
+--- needs a new image: Ghostty keeps showing nothing for a replaced image placed at
+--- another size.
 local function show(st, frame, view)
   local pbuf, grid = st.pane.buf, view.cols .. 'x' .. view.rows
   local reuse = st.grid == grid and st.image or nil
-  local id = kitty.show(frame, view.cols, view.rows, { size = { view.width, view.height }, id = reuse })
+  local size = view.width and { view.width, view.height } or nil
+  local id = kitty.show(frame, view.cols, view.rows, { size = size, id = reuse })
   if st.grid ~= grid then
     vim.bo[pbuf].modifiable = true
     api.nvim_buf_set_lines(pbuf, 0, -1, false, kitty.placeholders(view.cols, view.rows))
