@@ -581,9 +581,11 @@ local render_id = 0
 
 --- Render the pages for `buf`, following the cursor of its hidden float. At most
 --- one render is in flight per buffer; requests arriving meanwhile collapse into one rerun.
+--- A page view in another tab page waits: entering that tab (WinEnter) renders it.
 local function render(buf)
   local st = states[buf]
   if not (st and covered(st) and pane_valid(st) and api.nvim_win_get_buf(st.focus) == buf) then return end
+  if api.nvim_win_get_tabpage(st.focus) ~= api.nvim_get_current_tabpage() then return end
   if st.busy then
     st.again = true
     return

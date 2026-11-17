@@ -213,7 +213,7 @@ class PageViewTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
-    def test_pdf_opened_with_buffer_from_longer_file_renders(self):
+    def test_pdf_opened_with_buffer_and_tab_from_page_view(self):
         root = Path(__file__).parents[1]
         env = {**os.environ, "PDFVIEW_TEST_PDF": str(self.path)}
         result = subprocess.run(
