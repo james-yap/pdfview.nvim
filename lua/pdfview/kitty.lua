@@ -59,8 +59,13 @@ function M.supported()
   return true
 end
 
---- Terminal cell size in pixels, from TIOCGWINSZ on the server's tty.
----@return {width: number, height: number}?
+--- Terminal cell size in whole pixels, from TIOCGWINSZ on the server's tty.
+--- Ghostty's pixel size includes the window padding, so dividing it by the grid
+--- gives a cell a fraction of a pixel too large; an image that size is scaled
+--- down to the real cells and leaves seams between rows. Cells are whole pixels
+--- in kitty and Ghostty, and the padding is fewer pixels than there are rows or
+--- columns, so rounding down recovers them.
+---@return {width: integer, height: integer}?
 function M.cell_size()
   if cell then return cell end
   local ffi = require 'ffi'
@@ -69,7 +74,7 @@ function M.cell_size()
   local size = ffi.new 'pdfview_winsize'
   for fd = 0, 2 do
     if ffi.C.ioctl(fd, request, size) == 0 and size.col > 0 and size.xpixel > 0 then
-      cell = { width = size.xpixel / size.col, height = size.ypixel / size.row }
+      cell = { width = math.floor(size.xpixel / size.col), height = math.floor(size.ypixel / size.row) }
       return cell
     end
   end
