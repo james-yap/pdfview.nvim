@@ -39,6 +39,12 @@ only the keys that act on the view. The hidden float shares the PDF window's jum
 and alternate file. Switching buffers from it switches the PDF window, and closing it
 closes the PDF window.
 
+**One buffer per file.** PDF and HTML files are read by a `BufReadCmd`, which
+loads the document into the file's own buffer: on open, on `:e`/`:e!`, and when
+the file changes on disk. `python/html_helper.py` lays HTML out in Chromium the
+way the PDF helper reads pages. `:HtmlSource` rereads the same buffer as plain
+HTML source, and `:HtmlView` reads it back into the rendered view.
+
 **Drawing.** Images use the kitty graphics protocol with Unicode placeholders
 (`lua/pdfview/kitty.lua`). The image is drawn through placeholder characters in a
 buffer, so splits and floats cover it correctly. Frames reach the terminal as temporary
@@ -56,7 +62,8 @@ measures wrapped lines and character boxes only when the viewer needs coordinate
 
 ## Filetypes and highlight groups
 
-Filetypes: `pdfview` for the text buffer, `pdfview_page` for the image float.
+Filetypes: `pdfview` for the PDF text buffer, `htmlview` for the rendered HTML
+buffer, `pdfview_page` for the image float.
 
 Highlight groups, all of which you can override: `PdfViewHighlight`,
 `PdfViewUnderline`, `PdfViewStrikeOut`, `PdfViewSquiggly`, `PdfViewNote` and

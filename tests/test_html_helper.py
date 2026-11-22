@@ -116,6 +116,17 @@ class HtmlMarksTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
+    def test_one_buffer_reloads_and_switches_to_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(__file__).resolve().parents[1]
+            result = subprocess.run(
+                ["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-c", "luafile tests/test_html_reload.lua"],
+                cwd=root, env={**os.environ, "PDFVIEW_TEST_HTML": str(Path(tmp) / "reload.html")},
+                text=True, capture_output=True, timeout=90,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

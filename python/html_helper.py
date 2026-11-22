@@ -262,7 +262,6 @@ class Backend:
         if self.browser is None or not self.browser.is_connected():
             await self.launch()
         key = args["key"]
-        await self.close(key)
         context = await self.browser.new_context(
             no_viewport=True,
             java_script_enabled=False,
@@ -298,6 +297,8 @@ class Backend:
             await doc.cdp.send("Emulation.setScrollbarsHidden", {"hidden": True})
             await page.evaluate("() => __pdfview.freeze()")
             result = await doc.layout(args)
+            # Replace an open document only now: a failed reload keeps the old one.
+            await self.close(key)
             self.docs[key] = doc
             return result
         except BaseException:

@@ -1,29 +1,6 @@
 local api = vim.api
 local M = {}
 
-function M.update(st, buf, layout)
-  local old, new = st.lines, layout.lines
-  if #new == 0 then new[1] = '' end
-  local first = 1
-  while first <= #old and old[first] == new[first] do first = first + 1 end
-  if first <= #old or first <= #new then
-    -- Keep unaffected lines (and their native Vim marks) when a disclosure or
-    -- another DOM update changes the text. Resizing never rewrites the buffer.
-    local last, stop = #old, #new
-    while last >= first and stop >= first and old[last] == new[stop] do
-      last, stop = last - 1, stop - 1
-    end
-    local replace = {}
-    for i = first, stop do replace[#replace + 1] = new[i] end
-    vim.bo[buf].modifiable = true
-    api.nvim_buf_set_lines(buf, first - 1, last, false, replace)
-    vim.bo[buf].modifiable = false
-    vim.bo[buf].modified = false
-    st.search_lines = nil
-  end
-  st.lines, st.layout = new, layout
-end
-
 function M.set_spans(layout, spans)
   if #spans == 0 then spans[1] = {} end
   layout.spans = spans

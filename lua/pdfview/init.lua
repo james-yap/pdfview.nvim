@@ -13,6 +13,10 @@
 -- them into the PDF (incremental save), :e! discards them. The PDF reloads
 -- when it changes on disk, unless there are unsaved annotations; then :w is
 -- refused because the in-memory document no longer matches the file.
+--
+-- Local HTML files open the same way: python/html_helper.py lays them out in
+-- Chromium, and the buffer holds the page's text. :HtmlSource and :HtmlView
+-- switch that buffer between the HTML source and the rendered view.
 local M = {}
 local api, uv = vim.api, vim.uv
 local kitty = require 'pdfview.kitty'
@@ -84,6 +88,27 @@ end
 local function stat_key(path)
   local s = uv.fs_stat(path)
   return s and table.concat({ s.ino, s.size, s.mtime.sec, s.mtime.nsec }, ':')
+end
+
+local function is_html_path(path) return path:lower():match '%.html?$' ~= nil end
+
+--- Set the text of document buffer `buf` to `lines`, rewriting only the lines
+--- that changed so the others keep their marks.
+local function set_text(buf, lines)
+  if #lines == 0 then lines[1] = '' end
+  local old = api.nvim_buf_get_lines(buf, 0, -1, false)
+  local first = 1
+  while first <= #old and old[first] == lines[first] do first = first + 1 end
+  vim.bo[buf].modifiable = true
+  if first <= #old or first <= #lines then
+    local last, stop = #old, #lines
+    while last >= first and stop >= first and old[last] == lines[stop] do
+      last, stop = last - 1, stop - 1
+    end
+    api.nvim_buf_set_lines(buf, first - 1, last, false, vim.list_slice(lines, first, stop))
+  end
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].modified = false
 end
 
 local function html_selection(st, mode)
@@ -683,7 +708,8 @@ local function render_html(buf, st)
       st.html_resizing = nil
       finish(err)
       if err or states[buf] ~= st or not api.nvim_buf_is_loaded(buf) then return end
-      html.update(st, buf, res)
+      set_text(buf, res.lines)
+      st.lines, st.layout, st.search_lines = res.lines, res, nil
       st.html_width, st.top_height, st.html_scale = content_width, height, viewport.scale
       st.render_key, st.view = nil, nil
       if not st.pager then st.follow_lnum = nil end
@@ -1606,13 +1632,25 @@ end
 
 -- Buffer lifecycle -----------------------------------------------------------
 
+--- Stop showing `buf` as a document: drop its state, page view, keys and
+--- autocommands, and release it in the helper.
 local function unload(buf)
   local st = states[buf]
   if not st then return end
   states[buf] = nil
   if st.poll then st.poll:close() end
-  uncover(st)
-  close_pane(st)
+  pcall(api.nvim_del_augroup_by_name, 'pdfview.' .. buf)
+  if api.nvim_buf_is_loaded(buf) then
+    for _, m in ipairs(st.maps or {}) do
+      pcall(vim.keymap.del, m[1], m[2], { buffer = buf })
+    end
+    api.nvim_buf_clear_namespace(buf, NS, 0, -1)
+  end
+  -- Called from BufReadCmd, where closing the current (hidden) window is unsafe.
+  vim.schedule(function()
+    uncover(st)
+    close_pane(st)
+  end)
   if st.history and api.nvim_buf_is_valid(st.history) then api.nvim_buf_delete(st.history, { force = true }) end
   local source = st.html and browser or helper
   if source.proc then source.request('close', { key = buf }, function() end) end
@@ -1658,7 +1696,9 @@ local function write(buf, target)
 end
 
 local function setup_buffer(buf)
-  local is_html = states[buf].html
+  local st = states[buf]
+  local is_html = st.html
+  st.maps = {}
   local group = api.nvim_create_augroup('pdfview.' .. buf, { clear = true })
   local function au(events, fn) api.nvim_create_autocmd(events, { group = group, buffer = buf, callback = fn }) end
   au({ 'CursorMoved', 'ModeChanged' }, function()
@@ -1689,6 +1729,7 @@ local function setup_buffer(buf)
     for _, l in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
       if l then
         vim.keymap.set(mode, l, fn, { buffer = buf, desc = (is_html and 'HTML: ' or 'PDF: ') .. desc })
+        st.maps[#st.maps + 1] = { mode, l }
         if mode == 'n' then own[l] = fn end
       end
     end
@@ -1822,41 +1863,59 @@ local function setup_buffer(buf)
   end
 end
 
+--- Show `buf`'s file as a document: PDF pages, or HTML laid out by Chromium.
+--- Runs on open, on :e and :e!, and when the file changes on disk.
 load = function(buf)
   local path = canonical(api.nvim_buf_get_name(buf))
   local ok, reason = kitty.supported()
   if ok and not kitty.cell_size() then ok, reason = false, 'the terminal does not report its size in pixels' end
   if not ok then error('no page view: ' .. reason, 0) end
-  local res = call('open', { key = buf, path = path })
-  local st = states[buf] or { pager = true }
-  states[buf] = st
-  st.path, st.lines, st.info, st.pages, st.annots = path, res.lines, res.info, res.pages, res.annots
-  reset_history(st, buf, res.state)
-  st.stat, st.warned, st.version = stat_key(path), nil, (st.version or 0) + 1
-  -- Line numbers can change: drop views remembered per line.
-  st.layout, st.headers, st.views, st.follow_lnum = nil, {}, {}, nil
-  for lnum, info in ipairs(st.info) do
-    if info[4] then st.headers[info[1] + 1] = lnum end
+  local st = states[buf]
+  if is_html_path(path) then
+    local win = vim.fn.bufwinid(buf)
+    local viewport = html_pane_size(win ~= -1 and win or api.nvim_get_current_win())
+    viewport.key, viewport.path = buf, path
+    local res = browser.call('open', viewport)
+    if not st then st = { html = true, pager = true, top = 0, left = 0, html_anchor = true, follow_lnum = 1, follow_col = 0 } end
+    st.lines, st.layout, st.mark_views, st.render_key, st.view = res.lines, res, {}, nil, nil
+    st.html_width, st.top_height, st.html_scale = viewport.width, viewport.height, viewport.scale
+    if not st.pager then st.follow_lnum = nil end
+  else
+    local res = call('open', { key = buf, path = path })
+    st = st or { pager = true }
+    st.lines, st.info, st.pages, st.annots = res.lines, res.info, res.pages, res.annots
+    reset_history(st, buf, res.state)
+    st.version = (st.version or 0) + 1
+    -- Line numbers can change: drop views remembered per line.
+    st.layout, st.headers, st.views, st.follow_lnum = nil, {}, {}, nil
+    for lnum, info in ipairs(st.info) do
+      if info[4] then st.headers[info[1] + 1] = lnum end
+    end
   end
+  states[buf] = st
+  st.path, st.stat, st.warned, st.search_lines = path, stat_key(path), nil, nil
 
+  -- After :HtmlSource, the source's language server and parser must not see the view's text.
+  for _, client in ipairs(vim.lsp.get_clients { bufnr = buf }) do
+    vim.lsp.buf_detach_client(buf, client.id)
+  end
+  pcall(vim.treesitter.stop, buf)
   local views = {}
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
     views[win] = api.nvim_win_call(win, vim.fn.winsaveview)
   end
-  -- No swap file: the text is derived from the PDF, and a swap left by another
-  -- nvim on the same PDF would otherwise raise E325 on the first set_lines.
-  for option, value in pairs { swapfile = false, undolevels = -1, modifiable = true } do
-    vim.bo[buf][option] = value
-  end
-  api.nvim_buf_set_lines(buf, 0, -1, false, st.lines)
-  for option, value in pairs { modifiable = false, modified = false, buftype = 'acwrite', filetype = 'pdfview' } do
-    vim.bo[buf][option] = value
-  end
+  -- No swap file: the text is derived from the file, and a swap left by another
+  -- nvim on the same file would otherwise raise E325 on the first set_lines.
+  vim.bo[buf].swapfile, vim.bo[buf].undolevels = false, -1
+  set_text(buf, st.lines)
+  -- PDFs write annotations with :w; the HTML view cannot be written.
+  vim.bo[buf].buftype = st.html and 'nofile' or 'acwrite'
+  vim.bo[buf].filetype = st.html and 'htmlview' or 'pdfview'
   for win, view in pairs(views) do
     api.nvim_win_call(win, function() vim.fn.winrestview(view) end)
   end
 
-  decorate(buf)
+  if not st.html then decorate(buf) end
   setup_buffer(buf)
   if not st.poll then
     st.poll = assert(uv.new_fs_poll())
@@ -1867,66 +1926,45 @@ load = function(buf)
   refresh(buf)
 end
 
-local function html_path(buf)
+--- Read the HTML source into `buf` the way :edit reads a file (from BufReadCmd).
+local function read_source(buf)
   local path = api.nvim_buf_get_name(buf)
-  if vim.bo[buf].buftype == '' and path:lower():match '%.html?$' and not path:match '^%w+://' then
-    return path
+  vim.bo[buf].buftype, vim.bo[buf].swapfile, vim.bo[buf].modifiable = '', vim.go.swapfile, true
+  vim.bo[buf].undolevels = -1
+  if uv.fs_stat(path) then
+    vim.cmd('silent keepalt keepjumps read ++edit ' .. vim.fn.fnameescape(path))
+    api.nvim_buf_set_lines(buf, 0, 1, false, {})
   end
+  vim.bo[buf].undolevels = -123456 -- the global value
+  vim.bo[buf].modified = false
+  -- Replace the view's filetype: :setf in filetype detection would keep it.
+  vim.bo[buf].filetype = vim.filetype.match { buf = buf, filename = path } or ''
+  -- The user's BufReadPost autocommands, as after :edit.
+  vim.cmd('doautocmd BufReadPost ' .. vim.fn.fnameescape(path))
 end
 
-local function show_html(buf)
-  -- Keep native source edits and undo history even with 'nohidden'.
-  if api.nvim_get_current_buf() ~= buf then vim.cmd('hide buffer ' .. buf) end
-  refresh(buf)
-end
-
-local function open_html(path, reload)
-  if path:sub(1, 7) == 'file://' then path = vim.uri_to_fname(path) end
-  local source_path = vim.fn.fnamemodify(path, ':p')
-  path = canonical(path)
-  local ok, reason = kitty.supported()
-  if ok and not kitty.cell_size() then ok, reason = false, 'the terminal does not report its size in pixels' end
-  if not ok then error('no HTML view: ' .. reason, 0) end
-  local name = 'htmlview:' .. vim.uri_from_fname(path):sub(6)
-  local existing = vim.fn.bufnr(name)
-  local st = states[existing]
-  local stamp = stat_key(path)
-  if st and api.nvim_buf_is_loaded(existing) and st.stat == stamp and not reload then
-    st.source_path = source_path
-    return show_html(existing)
+--- BufReadCmd for PDF and HTML files. HTML falls back to its source when it
+--- cannot be shown (and after :HtmlSource).
+local function read(buf)
+  local name = api.nvim_buf_get_name(buf)
+  if name:match '^%w+://' then return end
+  local html_file = is_html_path(name)
+  if html_file and vim.b[buf].pdfview_html_source then
+    unload(buf)
+    return read_source(buf)
   end
-  local win = api.nvim_get_current_win()
-  local viewport = html_pane_size(win)
-  local buf = existing >= 0 and existing or api.nvim_create_buf(true, true)
-  viewport.key, viewport.path = buf, path
-  local opened, result = pcall(browser.call, 'open', viewport)
-  if not opened then
-    if existing < 0 then api.nvim_buf_delete(buf, { force = true }) end
-    error(result, 0)
-  end
-  if st and api.nvim_buf_is_loaded(buf) then
-    html.update(st, buf, result)
-    st.mark_views = {}
-    st.html_width, st.top_height, st.html_scale = viewport.width, viewport.height, viewport.scale
-    st.stat, st.render_key, st.view = stamp, nil, nil
-    if not st.pager then st.follow_lnum = nil end
-    st.source_path = source_path
-    return show_html(buf)
-  end
-  if existing < 0 then api.nvim_buf_set_name(buf, name) end
-  for option, value in pairs { buftype = 'nofile', swapfile = false, undolevels = -1, modifiable = false } do
-    vim.bo[buf][option] = value
-  end
-  local st = { html = true, pager = true, top = 0, left = 0, html_anchor = true, lines = { '' }, follow_lnum = 1, follow_col = 0 }
-  st.html_width, st.top_height, st.html_scale = viewport.width, viewport.height, viewport.scale
-  st.mark_views = {}
-  st.source_path, st.stat = source_path, stamp
-  states[buf] = st
-  html.update(st, buf, result)
-  setup_buffer(buf)
-  vim.bo[buf].filetype = 'htmlview'
-  if api.nvim_win_is_valid(win) then
-    api.nvim_win_call(win, function() show_html(buf) end)
+  local ok, err = pcall(load, buf)
+  if ok then return end
+  -- Nothing left of a previous view: :e! has emptied the buffer.
+  unload(buf)
+  if html_file then
+    vim.b[buf].pdfview_html_source = true
+    read_source(buf)
+    notify('Showing HTML source: ' .. err, vim.log.levels.WARN)
+  else
+    -- Keep :w from writing the empty buffer over the PDF.
+    vim.bo[buf].buftype = 'nofile'
+    notify('Cannot open ' .. name .. ': ' .. err, vim.log.levels.ERROR)
   end
 end
 
@@ -1980,70 +2018,33 @@ function M.setup(opts)
     end)
   end, NS)
   api.nvim_create_autocmd('ColorScheme', { group = GROUP, callback = set_hls })
-  local pending = {}
-  api.nvim_create_autocmd({ 'BufReadPost', 'BufEnter', 'BufWinEnter' }, {
+  api.nvim_create_autocmd('BufReadCmd', {
     group = GROUP,
-    pattern = { '*.[hH][tT][mM][lL]', '*.[hH][tT][mM]' },
-    callback = function(ev)
-      local buf = ev.buf
-      if ev.event == 'BufReadPost' then vim.b[buf].pdfview_html_source = nil end
-      if pending[buf] or vim.b[buf].pdfview_html_source then return end
-      pending[buf] = true
-      vim.schedule(function()
-        pending[buf] = nil
-        if api.nvim_get_current_buf() ~= buf or vim.b[buf].pdfview_html_source then return end
-        local path = html_path(buf)
-        local stat = path and uv.fs_stat(path)
-        if not stat or stat.type ~= 'file' then return end
-        local ok, err = pcall(open_html, path)
-        if not ok then
-          vim.b[buf].pdfview_html_source = true
-          notify('Showing HTML source: ' .. err, vim.log.levels.WARN)
-        end
-      end)
-    end,
+    pattern = { '*.[pP][dD][fF]', '*.[hH][tT][mM][lL]', '*.[hH][tT][mM]' },
+    callback = function(ev) read(ev.buf) end,
   })
   api.nvim_create_user_command('HtmlSource', function()
-    local st = states[api.nvim_get_current_buf()]
-    if not (st and st.html) then return end
-    local buf = vim.fn.bufadd(st.source_path)
-    vim.b[buf].pdfview_html_source = true
-    vim.cmd('buffer ' .. buf)
-    vim.b[buf].pdfview_html_source = true
-  end, { desc = 'Edit the HTML file behind the rendered view' })
-  api.nvim_create_user_command('HtmlView', function(args)
     local buf = api.nvim_get_current_buf()
-    local st = states[buf]
-    local path = args.fargs[1] or (st and st.html and st.source_path) or html_path(buf)
-    if not path then return notify('No HTML file to preview', vim.log.levels.ERROR) end
-    local ok, err = pcall(open_html, path)
-    if not ok then notify('Cannot open ' .. path .. ': ' .. err, vim.log.levels.ERROR) end
-  end, { nargs = '?', complete = 'file', desc = 'Read a local HTML file in a continuous, rendered view' })
-  -- :e and :e! on the rendered view: lay the file out again from disk.
-  api.nvim_create_autocmd('BufReadCmd', {
-    group = GROUP,
-    pattern = 'htmlview://*',
-    callback = function(ev)
-      local buf = ev.buf
-      local st = states[buf]
-      -- The buffer is empty now: diff the new text against that, not the old text.
-      if st then st.lines = api.nvim_buf_get_lines(buf, 0, -1, false) end
-      local path = vim.uri_to_fname('file:' .. api.nvim_buf_get_name(buf):sub(#'htmlview:' + 1))
-      local ok, err = pcall(open_html, path, true)
-      if ok then return end
-      -- Keep showing the previous layout, with its text back in the buffer.
-      if st and states[buf] == st then html.update(st, buf, st.layout) end
-      notify('Cannot reload ' .. path .. ': ' .. err, vim.log.levels.ERROR)
-    end,
-  })
-  api.nvim_create_autocmd('BufReadCmd', {
-    group = GROUP,
-    pattern = '*.[pP][dD][fF]',
-    callback = function(ev)
-      local ok, err = pcall(load, ev.buf)
-      if not ok then notify('Cannot open ' .. ev.match .. ': ' .. err, vim.log.levels.ERROR) end
-    end,
-  })
+    if not (states[buf] and states[buf].html) then return notify('Not an HTML view', vim.log.levels.WARN) end
+    vim.b[buf].pdfview_html_source = true
+    vim.cmd.edit()
+  end, { desc = 'Edit the HTML source in place of the rendered view' })
+  api.nvim_create_user_command('HtmlView', function(args)
+    local path = args.args:match '^file://' and vim.uri_to_fname(args.args) or args.args
+    local ok, err = pcall(function()
+      if path ~= '' then vim.cmd.edit(vim.fn.fnameescape(path)) end
+      local buf = api.nvim_get_current_buf()
+      if states[buf] then return end
+      if not is_html_path(api.nvim_buf_get_name(buf)) then error('not an HTML file', 0) end
+      vim.b[buf].pdfview_html_source = nil
+      local edited, e = pcall(vim.cmd.edit, { bang = args.bang })
+      if not edited then
+        vim.b[buf].pdfview_html_source = true
+        error(e, 0)
+      end
+    end)
+    if not ok then notify(err, vim.log.levels.ERROR) end
+  end, { nargs = '?', bang = true, complete = 'file', desc = 'Show a local HTML file in the rendered view' })
   api.nvim_create_autocmd({ 'WinResized', 'VimResized' }, {
     group = GROUP,
     callback = function()
