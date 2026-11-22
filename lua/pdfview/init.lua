@@ -1880,7 +1880,7 @@ local function show_html(buf)
   refresh(buf)
 end
 
-local function open_html(path)
+local function open_html(path, reload)
   if path:sub(1, 7) == 'file://' then path = vim.uri_to_fname(path) end
   local source_path = vim.fn.fnamemodify(path, ':p')
   path = canonical(path)
@@ -1891,7 +1891,7 @@ local function open_html(path)
   local existing = vim.fn.bufnr(name)
   local st = states[existing]
   local stamp = stat_key(path)
-  if st and api.nvim_buf_is_loaded(existing) and st.stat == stamp then
+  if st and api.nvim_buf_is_loaded(existing) and st.stat == stamp and not reload then
     st.source_path = source_path
     return show_html(existing)
   end
@@ -2019,6 +2019,23 @@ function M.setup(opts)
     local ok, err = pcall(open_html, path)
     if not ok then notify('Cannot open ' .. path .. ': ' .. err, vim.log.levels.ERROR) end
   end, { nargs = '?', complete = 'file', desc = 'Read a local HTML file in a continuous, rendered view' })
+  -- :e and :e! on the rendered view: lay the file out again from disk.
+  api.nvim_create_autocmd('BufReadCmd', {
+    group = GROUP,
+    pattern = 'htmlview://*',
+    callback = function(ev)
+      local buf = ev.buf
+      local st = states[buf]
+      -- The buffer is empty now: diff the new text against that, not the old text.
+      if st then st.lines = api.nvim_buf_get_lines(buf, 0, -1, false) end
+      local path = vim.uri_to_fname('file:' .. api.nvim_buf_get_name(buf):sub(#'htmlview:' + 1))
+      local ok, err = pcall(open_html, path, true)
+      if ok then return end
+      -- Keep showing the previous layout, with its text back in the buffer.
+      if st and states[buf] == st then html.update(st, buf, st.layout) end
+      notify('Cannot reload ' .. path .. ': ' .. err, vim.log.levels.ERROR)
+    end,
+  })
   api.nvim_create_autocmd('BufReadCmd', {
     group = GROUP,
     pattern = '*.[pP][dD][fF]',
