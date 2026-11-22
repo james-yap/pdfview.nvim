@@ -616,6 +616,40 @@ local function html_anchor(buf, st)
   return true
 end
 
+local function html_mark_name(mark)
+  if mark == "'" or mark == '`' then return "'" end
+  if mark:match '^[a-zA-Z]$' then return mark end
+end
+
+local function html_mark_view(st)
+  local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+  local y = cursor_span(st, st.layout, lnum, col)
+  -- Anchor to the wrapped fragment so the view still follows the mark after reflow.
+  return { lnum = lnum, col = col, offset = st.top - math.floor(y), left = st.left }
+end
+
+local function jump_to_html_mark(buf, key)
+  local count, mark = vim.v.count, vim.fn.getcharstr()
+  local st, name = states[buf], html_mark_name(mark)
+  local pos = name and vim.fn.getpos("'" .. name)
+  if not (pos and pos[2] ~= 0 and (pos[1] == 0 or pos[1] == buf)
+      and st and covered(st) and api.nvim_get_current_win() == st.focus and html_anchor(buf, st)) then
+    api.nvim_feedkeys((count > 0 and count or '') .. key .. mark, 'ni', false)
+    return
+  end
+  local saved, origin = st.mark_views[name], html_mark_view(st)
+  vim.cmd.normal { key .. mark, bang = true }
+  st.mark_views["'"] = origin
+  -- Match the native mark, not the post-jump cursor: 'a goes to first nonblank,
+  -- which may be in a different wrap fragment than the one marked with ma.
+  if saved and saved.lnum == pos[2] and saved.col == pos[3] - 1 then
+    local y = cursor_span(st, st.layout, saved.lnum, saved.col)
+    st.top, st.left = math.floor(y) + saved.offset, saved.left
+    st.follow_lnum, st.follow_col = unpack(api.nvim_win_get_cursor(st.focus))
+  end
+  render(buf)
+end
+
 local function render_html(buf, st)
   if st.html_measuring then return end
   local width, height, cols, rows = pane_size(st.pane.win)
@@ -1650,6 +1684,22 @@ local function setup_buffer(buf)
   end
   local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
   map({ 'n', 'x' }, prefixed 'y', function() snapshot(buf) end, 'copy snapshot for agent')
+  -- Keep Vim's mark, and remember the rendered view in which it was set.
+  map('n', 'm', function()
+    local mark = vim.fn.getcharstr()
+    local st = states[buf]
+    if st and covered(st) and api.nvim_get_current_win() == st.focus then
+      if st.html then
+        local name = html_mark_name(mark)
+        if not html_anchor(buf, st) then return end
+        if name then st.mark_views[name] = html_mark_view(st) end
+      elseif st.view then
+        local lnum = api.nvim_win_get_cursor(st.focus)[1]
+        st.views[lnum] = (line_span(st, st.layout, lnum) - st.top) / st.top_width
+      end
+    end
+    pcall(vim.cmd.normal, { 'm' .. mark, bang = true })
+  end, 'set a mark that also remembers the page view')
   if not is_html then
     map('x', prefixed 'h', function() annotate(buf, 'highlight') end, 'highlight selection')
     map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
@@ -1658,16 +1708,6 @@ local function setup_buffer(buf)
     map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
     map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
     map('n', prefixed 'l', function() list(buf) end, 'list annotations')
-    -- Marks also remember the page view, which a later jump to them restores (view_for).
-    map('n', 'm', function()
-      local mark = vim.fn.getcharstr()
-      local st = states[buf]
-      if st and st.view and covered(st) and api.nvim_get_current_win() == st.focus then
-        local lnum = api.nvim_win_get_cursor(st.focus)[1]
-        st.views[lnum] = (line_span(st, st.layout, lnum) - st.top) / st.top_width
-      end
-      pcall(vim.cmd.normal, { 'm' .. mark, bang = true })
-    end, 'set a mark that also remembers the page view')
     map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
     map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
     map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
@@ -1740,9 +1780,12 @@ local function setup_buffer(buf)
     page_map('<ScrollWheelLeft>', function(st) pan(st, -1) end, 'pan the document left', { mouse = true })
     page_map('<LeftMouse>', function() end, 'ignore clicks on the document', { mouse = true })
     page_map('<LeftDrag>', function() end, 'ignore drags on the document', { mouse = true })
+    for _, key in ipairs { "'", '`' } do
+      map('n', key, function() jump_to_html_mark(buf, key) end, 'jump to a mark and restore its view')
+    end
     -- Anchor native text commands to the displayed viewport, not the last
     -- cursor position before pager scrolling.
-    for _, key in ipairs { 'v', 'V', '<C-v>', 'n', 'N', 'm' } do
+    for _, key in ipairs { 'v', 'V', '<C-v>', 'n', 'N' } do
       local visual = key == 'v' or key == 'V' or key == '<C-v>'
       map('n', key, function()
         local st = states[buf]
@@ -1852,6 +1895,7 @@ local function open_html(path)
   end
   if st and api.nvim_buf_is_loaded(buf) then
     html.update(st, buf, result)
+    st.mark_views = {}
     st.stat, st.html_width, st.top_height, st.render_key, st.view = stamp, width, height, nil, nil
     if not st.pager then st.follow_lnum = nil end
     st.source_path = source_path
@@ -1862,6 +1906,7 @@ local function open_html(path)
     vim.bo[buf][option] = value
   end
   local st = { html = true, pager = true, top = 0, left = 0, top_height = height, html_width = width, html_anchor = true, lines = { '' }, follow_lnum = 1, follow_col = 0 }
+  st.mark_views = {}
   st.source_path, st.stat = source_path, stamp
   states[buf] = st
   html.update(st, buf, result)

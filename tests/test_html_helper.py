@@ -1,6 +1,9 @@
 """Run with the HTML helper's Playwright and PyMuPDF dependencies."""
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -69,6 +72,26 @@ class StaticHtmlTest(unittest.IsolatedAsyncioTestCase):
                 finally:
                     if backend.browser:
                         await backend.browser.close()
+
+
+class HtmlMarksTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("nvim"), "Neovim is not installed")
+    def test_marks_restore_the_rendered_viewport(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "marks.html"
+            path.write_text(
+                '<!doctype html><style>body { margin: 0 } header { width: 1200px; height: 480px }'
+                'p { width: 100px; margin: 0; font: 14px/20px monospace } footer { height: 600px }</style>'
+                '<header>Start</header><p>' + 'word ' * 240 + '</p><footer>End</footer>',
+                encoding="utf-8",
+            )
+            root = Path(__file__).resolve().parents[1]
+            result = subprocess.run(
+                ["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-c", "luafile tests/test_html_marks.lua"],
+                cwd=root, env={**os.environ, "PDFVIEW_TEST_HTML": str(path)},
+                text=True, capture_output=True, timeout=90,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

@@ -103,9 +103,13 @@ the text.
 
 ## Marks and jumps
 
-Marks (`m`) and jumps remember the view. When `'a`, `` `a ``, `''`, `<C-o>` or `<C-i>`
-takes you somewhere off screen, the page scrolls back to exactly where it was when you
-set the mark or left. Other moves scroll just enough to show the cursor.
+In PDFs, marks (`m`) and jumps remember the view. When `'a`, `` `a ``, `''`, `<C-o>`
+or `<C-i>` takes you somewhere off screen, the page scrolls back to where it was
+when you set the mark or left. Other moves scroll just enough to show the cursor.
+
+In HTML, `ma` saves both scroll offsets. `'a` and `` `a `` restore that viewport
+while keeping Vim's linewise and exact-column jumps, respectively. `''` returns
+to the viewport you jumped from.
 
 ## Scrollbar
 
