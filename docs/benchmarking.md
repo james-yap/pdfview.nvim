@@ -4,6 +4,7 @@
 - [Running the benchmark](#running-the-benchmark)
 - [Profiling a live session](#profiling-a-live-session)
 - [Reference numbers](#reference-numbers)
+- [HTML scrolling](#html-scrolling)
 
 ## What a frame costs
 
@@ -105,3 +106,14 @@ on an Apple Silicon Mac:
 
 Before raw frames and the caches, every frame rendered its pages from scratch and
 encoded a PNG: about 100 ms a frame on the same file.
+
+## HTML scrolling
+
+Chromium renders the static document a strip at a time, on demand. The helper
+keeps up to 128 MiB of decoded RGB strips per preview. A warm pager frame copies
+cached pixels, draws the scrollbar and writes raw RGB; it does not call Chromium
+or measure text. Crossing into a new strip pays the cost of a Chromium screenshot
+and PNG decode once. Resizing or reopening a changed file discards the cache.
+
+Text coordinates are measured on demand for cursor movement, search, selection,
+and Leap. The benchmark and `profile()` above measure PDF, not HTML.

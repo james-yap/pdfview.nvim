@@ -47,6 +47,9 @@ pane's image under the same id. The helper rasterizes each page once and keeps i
 it caches the scrollbar track too, so a PDF scroll step mostly copies pixels. PDF and
 HTML share the scrollbar painter; HTML lays out the page in a narrower Chromium
 viewport so the bar sits beside the content instead of on top of it.
+HTML freezes the page and caches RGB strips rather than taking screenshots on
+every scroll. The helper sends text at layout time for native Vim commands, but
+measures wrapped lines and character boxes only when the viewer needs coordinates.
 
 ## Filetypes and highlight groups
 
@@ -69,6 +72,13 @@ notes (live preview, diagnostics, rendered hover), annotation undo and redo, the
 modified flag, and keeping annotations intact through saves, including repaired PDFs.
 
 To include the Leap test, set `PDFVIEW_LEAP_RTP` to your `leap.nvim` directory.
+
+For the HTML regression test, install Chrome or Playwright Chromium as described
+in the README, then run:
+
+```sh
+uv run --with 'playwright>=1.55,<2' --with 'pymupdf>=1.26,<1.27' tests/test_html_helper.py
+```
 
 ## Benchmarking
 

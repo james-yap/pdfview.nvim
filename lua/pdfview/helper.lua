@@ -1,6 +1,6 @@
 local M = {}
 
-function M.new(script, label, on_event)
+function M.new(script, label)
   local helper = { seq = 0, pending = {} }
 
   local function start()
@@ -11,10 +11,6 @@ function M.new(script, label, on_event)
     local chunks, stderr = {}, ''
     local function dispatch(line)
       local msg = vim.json.decode(line, { luanil = { object = true, array = true } })
-      if msg.event then
-        if on_event then on_event(msg) end
-        return
-      end
       local cb = helper.pending[msg.id]
       helper.pending[msg.id] = nil
       if cb then cb(msg.error, msg.result) end

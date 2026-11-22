@@ -118,7 +118,8 @@ Both views show:
 - in cursor mode, the cursor line as a blue rule,
 - a see-through box over the part in view.
 
-HTML reflows to leave a gutter for the bar, so it does not cover the document.
+HTML reflows to leave a gutter for the bar. Its wheel pans the static document;
+clicks do not activate links or controls.
 
 In PDFs, a badge below the bar shows the page in the middle of the view and the page count,
 after `CURSOR` in cursor mode. Its highlight group is `PdfViewPage`, linked to

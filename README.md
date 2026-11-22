@@ -125,9 +125,16 @@ visual selection, and yank. Use `"+y` to copy selected text to the system
 clipboard. Leap uses the same key as in PDF view. Yanks contain plain DOM text,
 not the original Typst or LaTeX source.
 
-With `:set mouse=a`, click links and disclosures such as **Answer** or scroll
-with the wheel. Open only HTML you trust: the viewer runs page JavaScript in an
-isolated Chromium context. HTML buffers are read-only and have no annotations.
+Use `<leader>py` in normal or visual mode to save the visible HTML as an
+agent snapshot. Like PDF snapshots, it draws a red box around the selection
+or a small red crosshair around the cursor character. The caption includes
+the URL and selected text or cursor context. On macOS, the PNG is also copied
+to the clipboard.
+
+HTML is a static, read-only preview. The wheel scrolls the document, but page
+scripts, links, disclosures, forms, and animations do not run. Fixed and sticky
+elements render in place. Pre-render any math or diagrams that normally need
+JavaScript. HTML buffers have no annotations.
 
 HTML mode uses Google Chrome if installed and installs Playwright via `uv` on
 first use. For bundled Chromium instead, run this from the plugin directory:

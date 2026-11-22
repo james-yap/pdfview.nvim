@@ -20,9 +20,9 @@ local html = require 'pdfview.html'
 local transport = require 'pdfview.helper'
 
 local ROOT = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(debug.getinfo(1, 'S').source:sub(2))))
-local render, html_changed
+local render
 local helper = transport.new(vim.fs.joinpath(ROOT, 'python', 'helper.py'), 'PDF')
-local browser = transport.new(vim.fs.joinpath(ROOT, 'python', 'html_helper.py'), 'HTML', function(msg) html_changed(msg) end)
+local browser = transport.new(vim.fs.joinpath(ROOT, 'python', 'html_helper.py'), 'HTML')
 local request, call = helper.request, helper.call
 local NS = api.nvim_create_namespace 'pdfview'
 local GROUP = api.nvim_create_augroup('pdfview', { clear = true })
@@ -355,16 +355,18 @@ local function cursor_span(st, L, lnum, col)
   return r[3], r[4]
 end
 
-local function html_view(st, width, height, cols, rows)
+local function html_view(st, width, height, cols, rows, content_width)
   local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
-  local top = st.top
-  if lnum ~= st.follow_lnum or col ~= st.follow_col then
-    local a, b = cursor_span(st, st.layout, lnum, col)
+  local L, top = st.layout, st.top
+  if L.spans and (lnum ~= st.follow_lnum or col ~= st.follow_col) then
+    local a, b = cursor_span(st, L, lnum, col)
     if not st.leaping or a < top or b > top + height then top = follow(top, height, a, b) end
+    st.html_anchor = nil
   end
-  top = clamp_top(st.layout, height, top)
-  st.top, st.top_height, st.follow_lnum, st.follow_col = top, height, lnum, col
-  return { top = top, width = width, height = height, cols = cols, rows = rows, layout = st.layout }
+  top = clamp_top(L, height, top)
+  st.left = math.floor(math.max(0, math.min(L.wide - content_width, st.left)))
+  st.top, st.follow_lnum, st.follow_col = top, lnum, col
+  return { top = top, left = st.left, width = width, height = height, cols = cols, rows = rows, layout = L }
 end
 
 --- The view for the pane's current size: st.top, moved only when the cursor
@@ -593,7 +595,29 @@ local function html_cursor_at(st, y, edge)
   st.follow_lnum, st.follow_col = unpack(api.nvim_win_get_cursor(st.focus))
 end
 
+local function html_geometry(buf, st)
+  if st.html_resizing or st.html_measuring then return false end
+  local layout = st.layout
+  if layout.spans then return true end
+  st.html_measuring = true
+  local spans = try_call('geometry', { key = buf })
+  st.html_measuring = nil
+  if not spans or states[buf] ~= st or layout ~= st.layout then return false end
+  html.set_spans(layout, spans)
+  return true
+end
+
+local function html_anchor(buf, st)
+  if not html_geometry(buf, st) or not covered(st) then return false end
+  if st.html_anchor then
+    html_cursor_at(st, st.top + margin(st.top_height), 0)
+    st.html_anchor = nil
+  end
+  return true
+end
+
 local function render_html(buf, st)
+  if st.html_measuring then return end
   local width, height, cols, rows = pane_size(st.pane.win)
   local bar_width = html_scrollbar_width(width)
   local content_width = width - bar_width
@@ -609,54 +633,42 @@ local function render_html(buf, st)
     return states[buf] == st and not err and again
   end
   local resized = st.html_width ~= content_width or st.top_height ~= height
-  if st.html_dirty or resized then
-    st.busy, st.html_dirty = true, nil
-    local old_top = st.top
+  if resized then
+    st.busy, st.html_resizing = true, true
     browser.request('layout', { key = buf, width = content_width, height = height }, function(err, res)
+      st.html_resizing = nil
       finish(err)
-      if err or not current() then
-        if not err and states[buf] == st then
-          st.html_dirty = true
-          render(buf)
-        end
-        return
-      end
+      if err or states[buf] ~= st or not api.nvim_buf_is_loaded(buf) then return end
       html.update(st, buf, res)
-      st.html_width, st.top_height, st.render_key = content_width, height, nil
-      if st.top == old_top then
-        st.top = res.top
-        if resized then
-          st.follow_lnum = nil
-        elseif res.top ~= old_top then
-          -- A link or native wheel event scrolled Chromium, not Vim.
-          local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
-          local a, b = cursor_span(st, st.layout, lnum, col)
-          if st.pager or a < st.top or b > st.top + height then
-            html_cursor_at(st, st.top + margin(height), 0)
-          end
-        end
-      end
+      st.html_width, st.top_height, st.render_key, st.view = content_width, height, nil, nil
+      if not st.pager then st.follow_lnum = nil end
       render(buf)
     end)
     return
   end
 
-  local view = html_view(st, width, height, cols, rows)
-  view.bar_width, view.content_width = bar_width, content_width
+  local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+  local moved = lnum ~= st.follow_lnum or col ~= st.follow_col
+  local search_active = search_pattern(st)
+  local text_needed = not st.pager or search_active or moved
+  if text_needed and not html_geometry(buf, st) then return end
+  if not current() then return end
+  if not st.pager and st.html_anchor and not moved then html_anchor(buf, st) end
+  local view = html_view(st, width, height, cols, rows, content_width)
+  view.bar_width = bar_width
   update_badge(st, view)
-  local marks = marks_for(buf, view)
+  local marks = (not st.pager or search_active) and marks_for(buf, view) or {}
   local bar = bar_width > 0 and scrollbar_for(buf, bar_width) or nil
   local search = bar and bar.search and st.search_lines.pattern
-  local key = vim.json.encode { view.top, width, marks, bar and bar.marks, bar and bar.cursor, search }
+  local key = vim.json.encode { view.top, view.left, width, marks, bar and bar.marks, bar and bar.cursor, search, st.layout.spans ~= nil }
   if key == st.render_key then return end
   st.render_key, st.busy = key, true
   render_id = render_id + 1
   local path = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-htmlview-%d-%d.rgb'):format(vim.fn.getpid(), render_id))
-  local params = { key = buf, top = view.top, marks = marks, scrollbar = bar, out = path }
-  browser.request('render', params, function(err, res)
-    if not err and current() then
-      if st.top == view.top then st.top = res.top end
-      view.top, st.view = res.top, view
+  local params = { key = buf, top = view.top, left = view.left, marks = marks, scrollbar = bar, out = path }
+  browser.request('render', params, function(err)
+    if not err and current() and view.layout == st.layout then
+      st.view = view
       show(st, path, view)
     else
       os.remove(path)
@@ -664,13 +676,6 @@ local function render_html(buf, st)
     end
     if finish(err) then render(buf) end
   end)
-end
-
-html_changed = function(msg)
-  local st = states[msg.key]
-  if msg.event ~= 'change' or not (st and st.html) then return end
-  st.html_dirty = true
-  render(msg.key)
 end
 
 --- Render the pages for `buf`, following the cursor of its hidden float. At most
@@ -762,6 +767,7 @@ end
 local function set_pager(buf, on)
   local st = states[buf]
   if st.pager == on then return end
+  if not on and st.html and not html_anchor(buf, st) then return end
   st.pager = on
   render(buf)
 end
@@ -814,7 +820,7 @@ end
 
 local function doc_point(st, view, page, box)
   local y = (box[2] + box[4]) / 2
-  if st.html then return box[1] - (view.layout.left or 0), y end
+  if st.html then return box[1] - view.left, y end
   local i, L = page + 1, view.layout
   return box[1] * L.scales[i], L.tops[i] + y * L.scales[i]
 end
@@ -838,14 +844,22 @@ end
 --- marks and the jumplist can then tell views apart (view_for).
 local function scroll_by(buf, delta)
   local st = states[buf]
+  if st.html and not st.pager and not html_geometry(buf, st) then return end
   local L, height, win = st.layout, st.top_height, st.focus
-  st.top = clamp_top(L, height, st.top + delta)
+  local top = clamp_top(L, height, st.top + delta)
+  local moved = top ~= st.top
+  st.top = top
+  if st.html and st.pager then
+    if moved then st.html_anchor = true end
+    render(buf)
+    return
+  end
   local m = margin(height)
   local lnum, col = unpack(api.nvim_win_get_cursor(win))
   local a, b = cursor_span(st, L, lnum, col)
   if st.html then
-    if st.pager or a < st.top + m or b > st.top + height - m then
-      local edge = (st.pager or delta > 0) and 0 or 1
+    if a < st.top + m or b > st.top + height - m then
+      local edge = delta > 0 and 0 or 1
       html_cursor_at(st, st.top + (edge == 0 and m or height - m), edge)
     end
     render(buf)
@@ -871,6 +885,7 @@ end
 --- zt / zz / zb: put the cursor line at the top (0), middle (0.5) or bottom (1) of the view.
 local function align(buf, where)
   local st = states[buf]
+  if st.html and not html_anchor(buf, st) then return end
   local L, height = st.layout, st.top_height
   local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
   local a, b = cursor_span(st, L, lnum, col)
@@ -899,6 +914,8 @@ local function screen_line(buf, where)
   local m = margin(height)
   local target = st.top + m + where * (height - 2 * m)
   if st.html then
+    if not html_geometry(buf, st) then return end
+    st.html_anchor = nil
     vim.cmd "normal! m'"
     html_cursor_at(st, target, where)
     render(buf)
@@ -937,43 +954,6 @@ local function click(buf)
   local lnum = hit and hit[1] or st.headers[i]
   api.nvim_win_set_cursor(win, { lnum, hit and byte_index(st.lines[lnum], hit[2]) or 0 })
   set_pager(buf, false)
-  return true
-end
-
-local function html_pointer(buf, action, dx, dy)
-  local st, pos = states[buf], vim.fn.getmousepos()
-  if not (st and st.view and covered(st)) then return false end
-  local row, col = pos.winrow, pos.wincol
-  if pos.winid ~= st.host then
-    if not st.html_pressed or action == 'down' or action == 'wheel' then return false end
-    local origin = api.nvim_win_get_position(st.host)
-    row, col = pos.screenrow - origin[1], pos.screencol - origin[2]
-  end
-  local v, cell = st.view, kitty.cell_size()
-  local x = (math.max(1, math.min(col, v.cols)) - 0.5) * cell.width
-  if action == 'down' then
-    if row < 1 or row > v.rows or col < 1 or col > v.cols then return false end
-    if x >= v.content_width then return true end
-    st.html_pressed = true
-  elseif action == 'up' then
-    if not st.html_pressed then return false end
-    st.html_pressed = nil
-  end
-  if action == 'wheel' then x = math.min(x, v.content_width - 1) end
-  local y = (math.max(1, math.min(row, v.rows)) - 0.5) * cell.height
-  browser.request('pointer', { key = buf, action = action, x = x, y = y, dx = dx, dy = dy }, function(err, hit)
-    if states[buf] ~= st or not covered(st) then return end
-    if err then return notify(err, vim.log.levels.ERROR) end
-    if hit and st.view and st.view.top == v.top and st.layout == v.layout and api.nvim_get_current_win() == st.focus then
-      if vim.fn.mode():match '^[vV\22]' then vim.cmd 'normal! \27' end
-      api.nvim_win_set_cursor(st.focus, { hit[1], byte_index(st.lines[hit[1]], hit[2]) })
-      st.pager = false
-    end
-    if action == 'wheel' then return end
-    if action == 'up' then st.html_dirty = true end
-    st.render_key = nil
-    render(buf)
-  end)
   return true
 end
 
@@ -1073,6 +1053,7 @@ local function leap_targets(buf, win)
     if in2 == '\27' then return {}, '' end
     local c1, c2 = norm(in1), norm(in2)
     local v = st.view
+    if st.html and (not v or v.layout ~= st.layout or not html_geometry(buf, st)) then return {}, '' end
     local cur = api.nvim_win_get_cursor(win)
     local targets, chars = {}, {}
     for _, lnum in ipairs(lines_in(st, v.layout, v.top, v.height)) do
@@ -1123,6 +1104,7 @@ local function leap_on_page(buf)
   local kwargs = { windows = { win }, inclusive = true }
   if st and st.view and covered(st) and win == st.focus then
     set_pager(buf, false)
+    if st.html and st.pager then return end
     kwargs.targets = leap_targets(buf, win)
   end
   require('leap').leap(kwargs)
@@ -1511,38 +1493,68 @@ end
 
 -- Snapshot for agents --------------------------------------------------------
 
---- PNG of the visible stacked pages, plus a caption with the visible pages, note
---- texts, the selected text, and in cursor mode without a selection the cursor,
---- which the image marks. Then back to pager mode: the snapshot is done with the cursor.
+local function html_snapshot(st, v, ranges, lnum, col)
+  local text, caption = st.lines[lnum], ''
+  local params = { top = v.top, left = v.left, ranges = ranges, color = COLORS.selection }
+  if ranges then
+    local excerpt, remaining = {}, 300
+    for i, r in ipairs(ranges) do
+      local line, first, last = st.lines[r[1]], r[2], r[3]
+      local count = math.min(last - first + 1, remaining)
+      if count > 0 then excerpt[i] = line:sub(byte_index(line, first) + 1, byte_index(line, first + count)) end
+      remaining = remaining - count
+      if remaining <= 0 then
+        if i < #ranges or first + count <= last then excerpt[#excerpt + 1] = '…' end
+        break
+      end
+      remaining = remaining - 1 -- newline between buffer lines
+    end
+    caption = '\nSelected text:\n' .. table.concat(excerpt, '\n')
+  elseif not st.pager and #text > 0 then
+    local ci = char_index(text, col)
+    local first = byte_index(text, math.max(0, ci - 30))
+    local start, stop = byte_index(text, ci), byte_index(text, ci + 1)
+    local last = byte_index(text, ci + 31)
+    caption = '\nCursor: ' .. (first > 0 and '…' or '') .. text:sub(first + 1, start) .. '[' .. text:sub(start + 1, stop) .. ']'
+      .. text:sub(stop + 1, last) .. (last < #text and '…' or '')
+    params.cursor = { lnum, ci }
+  end
+  params.caption = caption
+  return params
+end
+
+--- PNG of the visible view with context for an agent. Return to pager mode.
 local function snapshot(buf)
   local st, ranges = states[buf], selection(buf)
   local v = st.view
-  if not v then return notify('No page view to snapshot', vim.log.levels.WARN) end
-  if ranges and not ranges_page(st, ranges) then return notify('Selection must stay on one page', vim.log.levels.WARN) end
-  if ranges then vim.cmd 'normal! \27' end
-  local width = math.max(v.width, 1600)
-  local scale = width / v.width
-  local height, top, gap = math.floor(v.height * scale), v.top * scale, v.layout.gap * scale
+  if not v or (st.html and (st.html_resizing or v.layout ~= st.layout)) then return notify('No view to snapshot', vim.log.levels.WARN) end
+  if not st.html and ranges and not ranges_page(st, ranges) then return notify('Selection must stay on one page', vim.log.levels.WARN) end
   local dir = M.config.snapshot_dir or vim.fs.joinpath(kitty.tmpdir(), 'pdfview')
   vim.fn.mkdir(dir, 'p')
   local png = vim.fs.joinpath(dir, ('snap-%s-%03d.png'):format(os.date '%Y%m%d-%H%M%S', uv.now() % 1000))
   local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
-  local cursor = not (ranges or st.pager or st.info[lnum][4]) and { lnum, char_index(st.lines[lnum], col) } or nil
-  local params = {
-    key = buf,
-    width = width,
-    height = height,
-    top = top,
-    gap = gap,
-    ranges = ranges or {},
-    color = COLORS.selection,
-    cursor = cursor,
-    out = png,
-  }
+  local params
+  if st.html then
+    params = html_snapshot(st, v, ranges, lnum, col)
+  else
+    local width = math.max(v.width, 1600)
+    local scale = width / v.width
+    params = {
+      width = width,
+      height = math.floor(v.height * scale),
+      top = v.top * scale,
+      gap = v.layout.gap * scale,
+      ranges = ranges or {},
+      color = COLORS.selection,
+      cursor = not (ranges or st.pager or st.info[lnum][4]) and { lnum, char_index(st.lines[lnum], col) } or nil,
+    }
+  end
+  params.key, params.out = buf, png
+  if ranges then vim.cmd 'normal! \27' end
   if not try_call('snapshot', params) then return end
   set_pager(buf, true)
   if vim.fn.has 'mac' ~= 1 then return notify('Saved snapshot ' .. png .. ' (clipboard copy is macOS-only)') end
-  local res = vim.system({ 'osascript', '-e', ('set the clipboard to (read (POSIX file "%s") as «class PNGf»)'):format(png) }):wait()
+  local res = vim.system({ 'osascript', '-e', 'on run argv', '-e', 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)', '-e', 'end run', png }):wait()
   if res.code ~= 0 then return notify('Clipboard copy failed: ' .. res.stderr, vim.log.levels.ERROR) end
   notify('Copied snapshot ' .. png)
 end
@@ -1636,9 +1648,9 @@ local function setup_buffer(buf)
       end
     end
   end
+  local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
+  map({ 'n', 'x' }, prefixed 'y', function() snapshot(buf) end, 'copy snapshot for agent')
   if not is_html then
-    local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
-    map({ 'n', 'x' }, prefixed 'y', function() snapshot(buf) end, 'copy snapshot for agent')
     map('x', prefixed 'h', function() annotate(buf, 'highlight') end, 'highlight selection')
     map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
     map('x', prefixed 's', function() annotate(buf, 'strikeout') end, 'strike out selection')
@@ -1717,26 +1729,36 @@ local function setup_buffer(buf)
   page_map('gg', function(st) scroll_by(buf, -st.top) end, 'pager: pan to the start', pager)
   page_map('G', function(st) scroll_by(buf, st.layout.total) end, 'pager: pan to the end', pager)
   page_map('c', function() set_pager(buf, false) end, 'pager: cursor mode', pager)
+  page_map('<ScrollWheelDown>', function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'scroll the page down', { mouse = true })
+  page_map('<ScrollWheelUp>', function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'scroll the page up', { mouse = true })
   if is_html then
-    local function mouse(lhs, action, desc)
-      map({ 'n', 'x' }, lhs, function()
-        if not html_pointer(buf, action) then api.nvim_feedkeys(vim.keycode(lhs), 'n', false) end
-      end, desc)
+    local function pan(st, dir)
+      st.left = st.left + dir * 3 * vim.v.count1 * kitty.cell_size().width
+      render(buf)
     end
-    mouse('<LeftMouse>', 'down', 'press at the pointer')
-    mouse('<LeftRelease>', 'up', 'release at the pointer')
-    mouse('<LeftDrag>', 'move', 'drag the pointer')
-    mouse('<MouseMove>', 'move', 'move the pointer')
-    local function wheel(lhs, x, y)
-      page_map(lhs, function() html_pointer(buf, 'wheel', rows(x * vim.v.count1), rows(y * vim.v.count1)) end, 'scroll at the pointer', { mouse = true })
+    page_map('<ScrollWheelRight>', function(st) pan(st, 1) end, 'pan the document right', { mouse = true })
+    page_map('<ScrollWheelLeft>', function(st) pan(st, -1) end, 'pan the document left', { mouse = true })
+    page_map('<LeftMouse>', function() end, 'ignore clicks on the document', { mouse = true })
+    page_map('<LeftDrag>', function() end, 'ignore drags on the document', { mouse = true })
+    -- Anchor native text commands to the displayed viewport, not the last
+    -- cursor position before pager scrolling.
+    for _, key in ipairs { 'v', 'V', '<C-v>', 'n', 'N', 'm' } do
+      local visual = key == 'v' or key == 'V' or key == '<C-v>'
+      map('n', key, function()
+        local st = states[buf]
+        local count = vim.v.count
+        if covered(st) and st.pager and api.nvim_get_current_win() == st.focus then
+          if visual then
+            set_pager(buf, false)
+            if st.pager then return end
+          elseif not html_anchor(buf, st) then
+            return
+          end
+        end
+        api.nvim_feedkeys((count > 0 and count or '') .. vim.keycode(key), 'ni', false)
+      end, 'run text command at the viewer cursor')
     end
-    wheel('<ScrollWheelDown>', 0, 3)
-    wheel('<ScrollWheelUp>', 0, -3)
-    wheel('<ScrollWheelRight>', 3, 0)
-    wheel('<ScrollWheelLeft>', -3, 0)
   else
-    page_map('<ScrollWheelDown>', function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'scroll the page down', { mouse = true })
-    page_map('<ScrollWheelUp>', function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'scroll the page up', { mouse = true })
     page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
     page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
     page_map('<LeftDrag>', function() end, 'ignore drags on the page', { mouse = true })
@@ -1830,7 +1852,8 @@ local function open_html(path)
   end
   if st and api.nvim_buf_is_loaded(buf) then
     html.update(st, buf, result)
-    st.stat, st.html_dirty, st.html_scroll, st.render_key = stamp, true, nil, nil
+    st.stat, st.html_width, st.top_height, st.render_key, st.view = stamp, width, height, nil, nil
+    if not st.pager then st.follow_lnum = nil end
     st.source_path = source_path
     return show_html(buf)
   end
@@ -1838,7 +1861,7 @@ local function open_html(path)
   for option, value in pairs { buftype = 'nofile', swapfile = false, undolevels = -1, modifiable = false } do
     vim.bo[buf][option] = value
   end
-  local st = { html = true, pager = true, top = result.top, top_height = height, html_width = width, lines = { '' }, follow_lnum = 1, follow_col = 0 }
+  local st = { html = true, pager = true, top = 0, left = 0, top_height = height, html_width = width, html_anchor = true, lines = { '' }, follow_lnum = 1, follow_col = 0 }
   st.source_path, st.stat = source_path, stamp
   states[buf] = st
   html.update(st, buf, result)
@@ -2017,6 +2040,15 @@ function M.setup(opts)
   })
   -- The hidden text window cannot show incsearch: highlight the matches on the
   -- pages and pan to the one the search would land on.
+  api.nvim_create_autocmd('CmdlineEnter', {
+    group = GROUP,
+    pattern = { '/', '?' },
+    callback = function()
+      local buf = api.nvim_get_current_buf()
+      local st = states[buf]
+      if st and st.html and st.pager and covered(st) then html_anchor(buf, st) end
+    end,
+  })
   api.nvim_create_autocmd('CmdlineChanged', {
     group = GROUP,
     pattern = { '/', '?' },

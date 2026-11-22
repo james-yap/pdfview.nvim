@@ -3,7 +3,7 @@ local M = {}
 
 function M.update(st, buf, layout)
   local old, new = st.lines, layout.lines
-  if #new == 0 then new[1], layout.spans[1] = '', {} end
+  if #new == 0 then new[1] = '' end
   local first = 1
   while first <= #old and old[first] == new[first] do first = first + 1 end
   if first <= #old or first <= #new then
@@ -22,6 +22,11 @@ function M.update(st, buf, layout)
     st.search_lines = nil
   end
   st.lines, st.layout = new, layout
+end
+
+function M.set_spans(layout, spans)
+  if #spans == 0 then spans[1] = {} end
+  layout.spans = spans
 end
 
 -- Look up the wrap fragment containing a logical column. Collapsed spaces and

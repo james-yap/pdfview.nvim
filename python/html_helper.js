@@ -2,42 +2,59 @@
 // wrapped lines. Ranges keep Vim's text and Chromium's layout in agreement.
 (() => {
   if (window !== window.top) return;
-  const colors = new Set();
-  let indexed = [], byNode = new WeakMap(), scrollY = 0, timer;
+  let indexed = [];
   const range = document.createRange();
-  const controls = 'a[href],area,summary,button,input,textarea,select,label,video,audio,iframe,[contenteditable],[tabindex],[role="button"],[role="link"],[onclick]';
-
-  function changed() {
-    if (timer !== undefined) return;
-    timer = setTimeout(() => {
-      timer = undefined;
-      globalThis.__pdfviewChanged?.();
-    }, 32);
-  }
-
-  function watch() {
-    const resize = new ResizeObserver(changed);
-    resize.observe(document.documentElement);
-    new MutationObserver(changed).observe(document.documentElement, {
-      childList: true, subtree: true, characterData: true, attributes: true,
-    });
-    document.fonts.addEventListener('loadingdone', changed);
-    document.addEventListener('load', changed, true);
-    document.addEventListener('toggle', changed, true);
-    document.addEventListener('scroll', (event) => {
-      // Only browser-initiated root scrolling changes the logical viewport.
-      // Nested scrolling changes the layout coordinates, even at the same top.
-      if (event.target !== document || window.scrollY !== scrollY) changed();
-    }, true);
-  }
-  document.addEventListener('DOMContentLoaded', watch, {once: true});
-
+  const overrides = [];
   const sheet = new CSSStyleSheet();
-  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  sheet.replaceSync(`@layer pdfview {
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+    iframe, embed, object { display: none !important; }
+    html { overflow-anchor: none !important; }
+  }`);
+
+  function freeze() {
+    document.documentElement.inert = true;
+    document.adoptedStyleSheets = [sheet, ...document.adoptedStyleSheets];
+    for (const svg of document.querySelectorAll('svg')) svg.pauseAnimations();
+    for (const marquee of document.querySelectorAll('marquee')) marquee.stop();
+    for (const media of document.querySelectorAll('audio, video')) {
+      media.autoplay = false;
+      media.pause();
+    }
+  }
+
+  async function settle() {
+    // Re-evaluate position after reflow: a media query may no longer pin an element.
+    for (const [style, name, value, priority] of overrides) style.setProperty(name, value, priority);
+    overrides.length = 0;
+    const pinned = [];
+    for (const element of document.querySelectorAll('*')) {
+      const css = getComputedStyle(element);
+      if (css.position === 'fixed' || css.position === 'sticky') pinned.push([element.style, 'position', 'static']);
+      if (css.contentVisibility === 'auto') pinned.push([element.style, 'content-visibility', 'visible']);
+      if (css.backgroundAttachment.includes('fixed')) {
+        pinned.push([element.style, 'background-attachment', css.backgroundAttachment.replaceAll('fixed', 'scroll')]);
+      }
+    }
+    for (const [style, name, value] of pinned) {
+      overrides.push([style, name, style.getPropertyValue(name), style.getPropertyPriority(name)]);
+      style.setProperty(name, value, 'important');
+    }
+    for (const animation of document.getAnimations()) animation.cancel();
+    window.scrollTo({left: 0, top: 0, behavior: 'instant'});
+    // Decode offscreen and responsive images before the first strip can be cached.
+    await Promise.all(Array.from(document.images, image => {
+      if (image.loading === 'lazy') image.loading = 'eager';
+      return image.decode().catch(() => {});
+    }));
+    await document.fonts.ready;
+  }
 
   function scan() {
     indexed = [];
-    byNode = new WeakMap();
     let text = '', parts = [], count = 0, space;
 
     function line(empty = false) {
@@ -60,9 +77,6 @@
       text += value;
       count += size;
       parts.push(part);
-      const entries = byNode.get(node);
-      if (entries) entries.push(part);
-      else byNode.set(node, [part]);
     }
 
     function add(node, mode) {
@@ -131,15 +145,15 @@
     return true;
   }
 
-  function fragments(out, part, first, last, top) {
+  function fragments(out, part, first, last) {
     if (!set(range, part, first, last)) return;
     let low = Infinity, high = -Infinity, row;
     for (const r of range.getClientRects()) {
       if (r.width === 0 || r.height === 0) continue;
       if (row !== undefined && Math.abs(r.top - row) > 0.5 && first + 1 < last) {
         const middle = (first + last) >> 1;
-        fragments(out, part, first, middle, top);
-        fragments(out, part, middle, last, top);
+        fragments(out, part, first, middle);
+        fragments(out, part, middle, last);
         return;
       }
       row = r.top;
@@ -148,27 +162,26 @@
     }
     if (low === Infinity) return;
     const prev = out.at(-1);
-    if (prev && prev[1] === part.start + first && prev[2] === low + top && prev[3] === high + top) {
+    if (prev && prev[1] === part.start + first && prev[2] === low && prev[3] === high) {
       prev[1] = part.start + last;
     } else {
-      out.push([part.start + first, part.start + last, low + top, high + top]);
+      out.push([part.start + first, part.start + last, low, high]);
     }
   }
 
-  function layout() {
+  async function layout() {
+    await settle();
     scan();
-    const top = scrollY = window.scrollY;
-    return {
-      lines: indexed.map(({text}) => text),
-      spans: indexed.map(({parts}) => {
-        const out = [];
-        for (const part of parts) fragments(out, part, 0, part.size, top);
-        return out;
-      }),
-      total: document.scrollingElement?.scrollHeight ?? innerHeight,
-      top,
-      left: window.scrollX,
-    };
+    const root = document.scrollingElement;
+    return {lines: indexed.map(({text}) => text), total: root.scrollHeight, wide: root.scrollWidth};
+  }
+
+  function geometry() {
+    return indexed.map(({parts}) => {
+      const out = [];
+      for (const part of parts) fragments(out, part, 0, part.size);
+      return out;
+    });
   }
 
   function at(lnum, char) {
@@ -184,90 +197,57 @@
     }
   }
 
+  function clipRect(part, rect) {
+    let {left, top, right, bottom} = rect;
+    for (let e = part.node.parentElement; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+      const css = getComputedStyle(e);
+      if (css.display === 'inline' || css.display === 'contents') continue;
+      if (css.overflowX !== 'visible' || css.overflowY !== 'visible') {
+        const b = e.getBoundingClientRect();
+        if (css.overflowX !== 'visible') {
+          left = Math.max(left, b.left + e.clientLeft);
+          right = Math.min(right, b.left + e.clientLeft + e.clientWidth);
+        }
+        if (css.overflowY !== 'visible') {
+          top = Math.max(top, b.top + e.clientTop);
+          bottom = Math.min(bottom, b.top + e.clientTop + e.clientHeight);
+        }
+      }
+    }
+    return left < right && top < bottom ? [left, top, right, bottom] : null;
+  }
+
   function boxes(chars) {
     return chars.map(([lnum, char]) => {
       const part = at(lnum, char);
       if (!part || !set(range, part, char - part.start, char - part.start + 1)) return null;
-      const r = range.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) return null;
-      let {left, top, right, bottom} = r;
-      for (let e = part.node.parentElement; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
-        const css = getComputedStyle(e);
-        if (css.display === 'inline' || css.display === 'contents') continue;
-        if (css.overflowX !== 'visible' || css.overflowY !== 'visible') {
-          const b = e.getBoundingClientRect();
-          if (css.overflowX !== 'visible') {
-            left = Math.max(left, b.left + e.clientLeft);
-            right = Math.min(right, b.left + e.clientLeft + e.clientWidth);
-          }
-          if (css.overflowY !== 'visible') {
-            top = Math.max(top, b.top + e.clientTop);
-            bottom = Math.min(bottom, b.top + e.clientTop + e.clientHeight);
-          }
-        }
-      }
-      if (left >= right || top >= bottom) return null;
-      return [left + window.scrollX, top + window.scrollY, right + window.scrollX, bottom + window.scrollY];
+      return clipRect(part, range.getBoundingClientRect());
     });
   }
 
-  function hit({x, y}) {
-    if (document.elementFromPoint(x, y)?.closest(controls)) return null;
-    const caret = document.caretPositionFromPoint?.(x, y);
-    const fallback = !caret && document.caretRangeFromPoint?.(x, y);
-    const node = caret?.offsetNode ?? fallback?.startContainer;
-    const col = caret?.offset ?? fallback?.startOffset;
-    const parts = byNode.get(node);
-    if (!parts) return null;
-    for (const part of parts) {
-      if (col < part.offset || col > part.end) continue;
-      const delta = col - part.offset;
-      let index = Math.min(part.size - 1, delta);
-      if (part.offsets) {
-        index = 0;
-        while (index + 1 < part.size && part.offsets[index + 1] <= delta) index++;
+  function visitRanges(ranges, visit) {
+    for (const [lnum, first, last] of ranges) {
+      const parts = indexed[lnum - 1]?.parts;
+      if (!parts) continue;
+      for (const part of parts) {
+        if (part.start > last) break;
+        const start = Math.max(0, first - part.start);
+        const end = Math.min(part.size, last + 1 - part.start);
+        if (start < end && set(range, part, start, end)) visit(part);
       }
-      return [part.line, part.start + index];
     }
-    return null;
   }
 
-  function frame({top, marks}) {
-    window.scrollTo({left: window.scrollX, top, behavior: 'instant'});
-    scrollY = window.scrollY;
-    const highlights = new Map();
-    let priority = 0;
-    for (const {ranges, color} of marks) {
-      let highlight = highlights.get(color);
-      if (!highlight) {
-        highlight = new Highlight();
-        highlight.priority = ++priority;
-        highlights.set(color, highlight);
+  function rectangles(ranges) {
+    const boxes = [];
+    visitRanges(ranges, part => {
+      for (const rect of range.getClientRects()) {
+        const box = clipRect(part, rect);
+        if (box) boxes.push(box);
       }
-      for (const [lnum, first, last] of ranges) {
-        const parts = indexed[lnum - 1]?.parts;
-        if (!parts) continue;
-        for (const part of parts) {
-          if (part.start > last) break;
-          const start = Math.max(0, first - part.start);
-          const end = Math.min(part.size, last + 1 - part.start);
-          if (start < end && set(range, part, start, end)) highlight.add(range.cloneRange());
-        }
-      }
-    }
-    for (const color of colors) {
-      if (!highlights.has(color)) CSS.highlights.delete(`pdfview-${color}`);
-    }
-    for (const [color, highlight] of highlights) {
-      if (!colors.has(color)) {
-        const hex = color.toString(16).padStart(6, '0');
-        sheet.insertRule(`::highlight(pdfview-${color}) { background-color: #${hex}c0; color: #172033; }`);
-      }
-      CSS.highlights.set(`pdfview-${color}`, highlight);
-    }
-    for (const color of highlights.keys()) colors.add(color);
-    return scrollY;
+    });
+    return boxes;
   }
 
-  globalThis.__pdfview = {layout, frame, boxes, hit};
+  globalThis.__pdfview = {freeze, layout, geometry, boxes, rectangles};
 })();
