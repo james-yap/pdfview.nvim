@@ -16,9 +16,14 @@
 local M = {}
 local api, uv = vim.api, vim.uv
 local kitty = require 'pdfview.kitty'
+local html = require 'pdfview.html'
+local transport = require 'pdfview.helper'
 
 local ROOT = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(debug.getinfo(1, 'S').source:sub(2))))
-local HELPER = vim.fs.joinpath(ROOT, 'python', 'helper.py')
+local render, html_changed
+local helper = transport.new(vim.fs.joinpath(ROOT, 'python', 'helper.py'), 'PDF')
+local browser = transport.new(vim.fs.joinpath(ROOT, 'python', 'html_helper.py'), 'HTML', function(msg) html_changed(msg) end)
+local request, call = helper.request, helper.call
 local NS = api.nvim_create_namespace 'pdfview'
 local GROUP = api.nvim_create_augroup('pdfview', { clear = true })
 -- Tints for the page view / snapshot (multiplied over the page, so ink stays dark).
@@ -50,83 +55,15 @@ M.config = {
   typst_scale = 1.2,
 }
 
----@type table<integer, table> per PDF buffer
+---@type table<integer, table> per document buffer
 local states = {}
 local editor_focused = true
 
 local function notify(msg, level) vim.notify(msg, level or vim.log.levels.INFO, { title = 'pdfview' }) end
 
--- Helper process -------------------------------------------------------------
-
-local helper = { seq = 0, pending = {}, chunks = {}, stderr = '' }
-
-local function dispatch(line)
-  local msg = vim.json.decode(line, { luanil = { object = true, array = true } })
-  local cb = helper.pending[msg.id]
-  helper.pending[msg.id] = nil
-  if cb then cb(msg.error, msg.result) end
-end
-
--- Replies can be hundreds of KB on one line, arriving in many small reads:
--- scan only the new chunk for newlines and join the pieces once per reply.
-local function on_stdout(_, data)
-  if not data then return end
-  local start = 1
-  while true do
-    local nl = data:find('\n', start, true)
-    if not nl then break end
-    helper.chunks[#helper.chunks + 1] = data:sub(start, nl - 1)
-    local line = table.concat(helper.chunks)
-    helper.chunks = {}
-    vim.schedule(function() dispatch(line) end)
-    start = nl + 1
-  end
-  if start <= #data then helper.chunks[#helper.chunks + 1] = data:sub(start) end
-end
-
-local function start_helper()
-  if helper.proc then return end
-  if vim.fn.executable 'uv' ~= 1 then
-    error('pdfview needs uv on $PATH (https://docs.astral.sh/uv/getting-started/installation/)', 0)
-  end
-  helper.proc = vim.system({ 'uv', 'run', '--quiet', '--script', HELPER }, {
-    stdin = true,
-    stdout = on_stdout,
-    stderr = function(_, data)
-      if data then helper.stderr = (helper.stderr .. data):sub(-2000) end
-    end,
-  }, function(res)
-    vim.schedule(function()
-      helper.proc, helper.chunks = nil, {}
-      local pending, err = helper.pending, ('PDF helper exited (%d): %s'):format(res.code, helper.stderr)
-      helper.pending = {}
-      for _, cb in pairs(pending) do
-        cb(err)
-      end
-    end)
-  end)
-end
-
-local function request(method, params, cb)
-  start_helper()
-  helper.seq = helper.seq + 1
-  helper.pending[helper.seq] = cb
-  helper.proc:write(vim.json.encode { id = helper.seq, method = method, params = params } .. '\n')
-end
-
--- Synchronous request. The first call may wait for uv to install PyMuPDF.
-local function call(method, params)
-  local done, err, result
-  request(method, params, function(e, r)
-    done, err, result = true, e, r
-  end)
-  if not vim.wait(120000, function() return done end, 5) then error('PDF helper timed out: ' .. method, 0) end
-  if err then error(err, 0) end
-  return result
-end
-
 local function try_call(method, params)
-  local ok, res = pcall(call, method, params)
+  local source = states[params.key] and states[params.key].html and browser or helper
+  local ok, res = pcall(source.call, method, params)
   if not ok then notify(res, vim.log.levels.ERROR) end
   return ok and res or nil
 end
@@ -135,6 +72,8 @@ end
 
 local function char_index(text, byte) return vim.str_utfindex(text, 'utf-32', math.min(byte, #text), false) end
 local function byte_index(text, char) return vim.str_byteindex(text, 'utf-32', char, false) end
+
+local function is_header(st, lnum) return not st.html and st.info[lnum][4] end
 
 --- Absolute path with symlinks resolved (/tmp vs /private/tmp), for comparing write targets.
 local function canonical(path)
@@ -147,10 +86,26 @@ local function stat_key(path)
   return s and table.concat({ s.ino, s.size, s.mtime.sec, s.mtime.nsec }, ':')
 end
 
+local function html_selection(st, mode)
+  local ranges = {}
+  for _, pair in ipairs(vim.fn.getregionpos(vim.fn.getpos 'v', vim.fn.getpos '.', { type = mode })) do
+    local s, e = unpack(pair)
+    local lnum = s[2]
+    local text = st.lines[lnum]
+    if #text > 0 then
+      local cs = char_index(text, math.max(0, s[3] - 1))
+      local ce = math.min(char_index(text, math.max(0, e[3] - 1)), vim.str_utfindex(text, 'utf-32') - 1)
+      if cs <= ce then ranges[#ranges + 1] = { lnum, cs, ce } end
+    end
+  end
+  return #ranges > 0 and ranges or nil
+end
+
 --- Visual selection of the current window as helper ranges {lnum, first char, last char}.
 --- nil outside charwise/linewise visual mode; page headers are skipped.
 local function selection(buf)
   local mode = vim.fn.mode()
+  if states[buf].html and mode:match '^[vV\22]$' then return html_selection(states[buf], mode) end
   if mode ~= 'v' and mode ~= 'V' then return nil end
   local st, s, e = states[buf], vim.fn.getpos 'v', vim.fn.getpos '.'
   if s[2] > e[2] or (s[2] == e[2] and s[3] > e[3]) then
@@ -345,6 +300,7 @@ end
 
 --- Text lines (headers excluded) at least partly within doc pixels top..top+height, ascending.
 local function lines_in(st, L, top, height)
+  if st.html then return html.visible(L, top, height) end
   local lnums = {}
   for i = 1, #st.pages do
     if L.tops[i] < top + height and L.tops[i] + L.heights[i] > top then
@@ -381,6 +337,31 @@ local function jumplist_key(win)
   return ('%d:%d:%d:%d'):format(idx, #list, last.lnum or 0, last.col or 0)
 end
 
+local function pane_size(win)
+  local cell = assert(kitty.cell_size())
+  local cols = math.min(api.nvim_win_get_width(win), kitty.max_cells)
+  local rows = math.min(api.nvim_win_get_height(win), kitty.max_cells)
+  return math.floor(cols * cell.width), math.floor(rows * cell.height), cols, rows
+end
+
+local function cursor_span(st, L, lnum, col)
+  if not st.html then return line_span(st, L, lnum) end
+  local r = html.fragment(L, lnum, char_index(st.lines[lnum], col))
+  return r[3], r[4]
+end
+
+local function html_view(st, width, height, cols, rows)
+  local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+  local top = st.top
+  if lnum ~= st.follow_lnum or col ~= st.follow_col then
+    local a, b = cursor_span(st, st.layout, lnum, col)
+    if not st.leaping or a < top or b > top + height then top = follow(top, height, a, b) end
+  end
+  top = clamp_top(st.layout, height, top)
+  st.top, st.top_height, st.follow_lnum, st.follow_col = top, height, lnum, col
+  return { top = top, width = width, height = height, cols = cols, rows = rows, layout = st.layout }
+end
+
 --- The view for the pane's current size: st.top, moved only when the cursor
 --- line changes or the pane resizes.
 --- A jump to a line out of view restores the view that line was last seen in
@@ -388,11 +369,8 @@ end
 --- exact view; other moves scroll just enough to show the line.
 --- The image is rendered at exactly cols x rows cells of terminal pixels.
 local function view_for(st)
-  local cell = assert(kitty.cell_size())
-  local cols = math.min(api.nvim_win_get_width(st.pane.win), kitty.max_cells)
-  local rows = math.min(api.nvim_win_get_height(st.pane.win), kitty.max_cells)
-  local width, height = math.floor(cols * cell.width), math.floor(rows * cell.height)
-  local L = layout(st, width, math.floor(cell.height / 2))
+  local width, height, cols, rows = pane_size(st.pane.win)
+  local L = layout(st, width, math.floor(kitty.cell_size().height / 2))
   local lnum = api.nvim_win_get_cursor(st.focus)[1]
   local a, b = line_span(st, L, lnum)
   local top = st.top
@@ -427,8 +405,13 @@ end
 --- The "page/pages" badge in the pane's bottom-right corner, left of the
 --- scrollbar, for the page in the middle of the view.
 local function update_badge(st, view)
-  local page = page_at(view.layout, view.top + view.height / 2)
-  local text = (st.pager and ' %d/%d ' or ' CURSOR %d/%d '):format(page, #st.pages)
+  local text
+  if st.html then
+    text = st.pager and ' HTML ' or ' HTML CURSOR '
+  else
+    local page = page_at(view.layout, view.top + view.height / 2)
+    text = (st.pager and ' %d/%d ' or ' CURSOR %d/%d '):format(page, #st.pages)
+  end
   local width = #text
   local config = {
     relative = 'win',
@@ -515,10 +498,18 @@ local function marks_for(buf, view)
     ranges = vim.tbl_filter(function(r) return shown[r[1]] end, ranges)
     if #ranges > 0 then marks[#marks + 1] = { ranges = ranges, color = COLORS.selection } end
   end
-  if st.info[lnum][4] or st.pager then return marks end
+  if is_header(st, lnum) or st.pager then return marks end
   local text = st.lines[lnum]
-  if not ranges then marks[#marks + 1] = { ranges = { { lnum, 0, vim.str_utfindex(text, 'utf-32') - 1 } }, color = COLORS.cursor } end
+  if st.html and #text == 0 then return marks end
   local ci = char_index(text, col)
+  if not ranges then
+    local first, last = 0, vim.str_utfindex(text, 'utf-32') - 1
+    if st.html then
+      local fragment = html.fragment(view.layout, lnum, ci)
+      first, last = fragment[1], fragment[2] - 1
+    end
+    marks[#marks + 1] = { ranges = { { lnum, first, last } }, color = COLORS.cursor }
+  end
   marks[#marks + 1] = {
     ranges = { { lnum, ci, ci } },
     color = COLORS.cursor_char,
@@ -566,7 +557,7 @@ end
 local function show(st, frame, view)
   local pbuf, grid = st.pane.buf, view.cols .. 'x' .. view.rows
   local reuse = st.grid == grid and st.image or nil
-  local size = view.width and { view.width, view.height } or nil
+  local size = not st.html and view.width and { view.width, view.height } or nil
   local id = kitty.show(frame, view.cols, view.rows, { size = size, id = reuse })
   if st.grid ~= grid then
     vim.bo[pbuf].modifiable = true
@@ -676,7 +667,7 @@ end
 --- Render the pages for `buf`, following the cursor of its hidden float. At most
 --- one render is in flight per buffer; requests arriving meanwhile collapse into one rerun.
 --- A page view in another tab page waits: entering that tab (WinEnter) renders it.
-local function render(buf)
+render = function(buf)
   local st = states[buf]
   if not (st and covered(st) and pane_valid(st) and api.nvim_win_get_buf(st.focus) == buf) then return end
   if api.nvim_win_get_tabpage(st.focus) ~= api.nvim_get_current_tabpage() then return end
@@ -684,10 +675,11 @@ local function render(buf)
     st.again = true
     return
   end
-  local t0 = uv.hrtime()
   -- v, V and <C-v> in pager mode start a selection in cursor mode. Checked here, as
   -- render also runs from the input hook while another ModeChanged handler waits.
   if st.pager and api.nvim_get_current_win() == st.focus and api.nvim_get_mode().mode:match '^[vV\22]' then st.pager = false end
+  if st.html then return render_html(buf, st) end
+  local t0 = uv.hrtime()
   local view = view_for(st)
   update_badge(st, view)
   local marks, bar = marks_for(buf, view), scrollbar_for(buf, view)
@@ -811,13 +803,20 @@ local function close_host(buf, host)
   end
 end
 
---- Cell (0-based row, col) of the pane over point (x, y) of 0-based `page`, or nil when off view.
-local function cell_at(st, page, x, y)
+local function doc_point(st, view, page, box)
+  local y = (box[2] + box[4]) / 2
+  if st.html then return box[1] - (view.layout.left or 0), y end
+  local i, L = page + 1, view.layout
+  return box[1] * L.scales[i], L.tops[i] + y * L.scales[i]
+end
+
+--- Cell of the pane over a text box in either renderer's coordinates.
+local function cell_at(st, page, box)
   local v, cell = st.view, kitty.cell_size()
   if not (v and cell) then return end
-  local L, i = v.layout, page + 1
-  local row = math.floor((L.tops[i] + y * L.scales[i] - v.top) / cell.height)
-  local col = math.floor(x * L.scales[i] / cell.width)
+  local x, y = doc_point(st, v, page, box)
+  local row = math.floor((y - v.top) / cell.height)
+  local col = math.floor(x / cell.width)
   if row >= 0 and row < v.rows and col >= 0 and col < v.cols then return row, col end
 end
 
@@ -833,8 +832,16 @@ local function scroll_by(buf, delta)
   local L, height, win = st.layout, st.top_height, st.focus
   st.top = clamp_top(L, height, st.top + delta)
   local m = margin(height)
-  local lnum = api.nvim_win_get_cursor(win)[1]
-  local a, b = line_span(st, L, lnum)
+  local lnum, col = unpack(api.nvim_win_get_cursor(win))
+  local a, b = cursor_span(st, L, lnum, col)
+  if st.html then
+    if st.pager or a < st.top + m or b > st.top + height - m then
+      local edge = (st.pager or delta > 0) and 0 or 1
+      html_cursor_at(st, st.top + (edge == 0 and m or height - m), edge)
+    end
+    render(buf)
+    return
+  end
   if st.pager or a < st.top + m or b > st.top + height - m then
     local best, best_y
     for _, l in ipairs(lines_in(st, L, st.top + m, height - 2 * m)) do
@@ -856,8 +863,8 @@ end
 local function align(buf, where)
   local st = states[buf]
   local L, height = st.layout, st.top_height
-  local lnum = api.nvim_win_get_cursor(st.focus)[1]
-  local a, b = line_span(st, L, lnum)
+  local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+  local a, b = cursor_span(st, L, lnum, col)
   local m = margin(height)
   local top = where == 0 and a - m or where == 1 and b - height + m or (a + b - height) / 2
   st.top, st.follow_lnum = clamp_top(L, height, top), lnum
@@ -882,6 +889,12 @@ local function screen_line(buf, where)
   local L, height = st.layout, st.top_height
   local m = margin(height)
   local target = st.top + m + where * (height - 2 * m)
+  if st.html then
+    vim.cmd "normal! m'"
+    html_cursor_at(st, target, where)
+    render(buf)
+    return
+  end
   local best, best_d
   for _, l in ipairs(lines_in(st, L, st.top + m, height - 2 * m)) do
     local a, b = line_span(st, L, l)
@@ -918,6 +931,41 @@ local function click(buf)
   return true
 end
 
+local function html_pointer(buf, action, dx, dy)
+  local st, pos = states[buf], vim.fn.getmousepos()
+  if not (st and st.view and covered(st)) then return false end
+  local row, col = pos.winrow, pos.wincol
+  if pos.winid ~= st.host then
+    if not st.html_pressed or action == 'down' or action == 'wheel' then return false end
+    local origin = api.nvim_win_get_position(st.host)
+    row, col = pos.screenrow - origin[1], pos.screencol - origin[2]
+  end
+  local v, cell = st.view, kitty.cell_size()
+  if action == 'down' then
+    if row < 1 or row > v.rows or col < 1 or col > v.cols then return false end
+    st.html_pressed = true
+  elseif action == 'up' then
+    if not st.html_pressed then return false end
+    st.html_pressed = nil
+  end
+  local x = (math.max(1, math.min(col, v.cols)) - 0.5) * cell.width
+  local y = (math.max(1, math.min(row, v.rows)) - 0.5) * cell.height
+  browser.request('pointer', { key = buf, action = action, x = x, y = y, dx = dx, dy = dy }, function(err, hit)
+    if states[buf] ~= st or not covered(st) then return end
+    if err then return notify(err, vim.log.levels.ERROR) end
+    if hit and st.view and st.view.top == v.top and st.layout == v.layout and api.nvim_get_current_win() == st.focus then
+      if vim.fn.mode():match '^[vV\22]' then vim.cmd 'normal! \27' end
+      api.nvim_win_set_cursor(st.focus, { hit[1], byte_index(st.lines[hit[1]], hit[2]) })
+      st.pager = false
+    end
+    if action == 'wheel' then return end
+    if action == 'up' then st.html_dirty = true end
+    st.render_key = nil
+    render(buf)
+  end)
+  return true
+end
+
 -- leap.nvim on the page view -----------------------------------------------------
 
 local NS_LABELS = api.nvim_create_namespace 'pdfview.labels'
@@ -928,7 +976,7 @@ local function clear_labels()
   end
 end
 
---- Copy the labels leap is about to draw in PDF buffers onto their page panes,
+--- Copy the labels Leap is about to draw in text buffers onto their image panes,
 --- in the cell over each target's first character.
 local function mirror_labels(targets, first, last)
   local by_buf = {}
@@ -937,7 +985,7 @@ local function mirror_labels(targets, first, last)
     local buf = t.wininfo and t.wininfo.bufnr
     local st = states[buf]
     local virt_text = t.beacon and t.beacon[2].virt_text
-    if virt_text and t.pos and st and st.view and pane_valid(st) and not st.info[t.pos[1]][4] then
+    if virt_text and t.pos and st and st.view and pane_valid(st) and st.lines[t.pos[1]] and not is_header(st, t.pos[1]) then
       local lnum = t.pos[1]
       by_buf[buf] = by_buf[buf] or {}
       table.insert(by_buf[buf], { lnum = lnum, char = char_index(st.lines[lnum], t.pos[2] - 1 + t.beacon[1]), virt_text = virt_text, box = t.beacon[1] == 0 and t.box })
@@ -953,11 +1001,14 @@ local function mirror_labels(targets, first, last)
       end
       for _, l in ipairs(labels) do
         local b = l.box
+        local page = not st.html and st.info[l.lnum][1]
+        local row, col
+        if b then row, col = cell_at(st, page, b) end
         local width = 0
         for _, chunk in ipairs(l.virt_text) do
           width = width + api.nvim_strwidth(chunk[1])
         end
-        local row, col = cell_at(st, st.info[l.lnum][1], b[1], (b[2] + b[4]) / 2)
+        if width > st.view.cols then row = nil end
         if row then
           api.nvim_buf_set_extmark(st.pane.buf, NS_LABELS, row, 0, { virt_text = l.virt_text, virt_text_win_col = math.min(col, st.view.cols - width), strict = false })
         end
@@ -1025,30 +1076,26 @@ local function leap_targets(buf, win)
       end
     end
     if #targets == 0 then return {}, 'not found: ' .. in1 .. in2 end
-    local info = st.info[cur[1]]
-    if not info[4] then chars[#chars + 1] = { cur[1], char_index(st.lines[cur[1]], cur[2]) } end
+    local info = not st.html and st.info[cur[1]]
+    if not is_header(st, cur[1]) then chars[#chars + 1] = { cur[1], char_index(st.lines[cur[1]], cur[2]) } end
     local boxes = try_call('char_boxes', { key = buf, chars = chars })
-    if not boxes then return {}, '' end
-    local L = v.layout
-    local function point(page, box)
-      local i = page + 1
-      return box[1] * L.scales[i], L.tops[i] + (box[2] + box[4]) / 2 * L.scales[i]
+    if not boxes or (st.html and st.layout ~= v.layout) then return {}, '' end
+    local cx, cy = 0, v.top
+    if info and info[4] then
+      cy = v.layout.tops[info[1] + 1]
+    elseif boxes[#chars] then
+      cx, cy = doc_point(st, v, info and info[1], boxes[#chars])
     end
-    local cx, cy
-    if info[4] then
-      cx, cy = 0, L.tops[info[1] + 1]
-    else
-      cx, cy = point(info[1], boxes[#boxes])
-    end
+    local visible = {}
     for i, t in ipairs(targets) do
-      t.box = boxes[i]
-      local x, y = point(st.info[t.pos[1]][1], t.box)
-      t.dist = (x - cx) ^ 2 + (y - cy) ^ 2
+      local box, page = boxes[i], not st.html and st.info[t.pos[1]][1]
+      if box and cell_at(st, page, box) then
+        local x, y = doc_point(st, v, page, box)
+        t.box, t.dist = box, (x - cx) ^ 2 + (y - cy) ^ 2
+        visible[#visible + 1] = t
+      end
     end
-    targets = vim.tbl_filter(function(t)
-      local row = cell_at(st, st.info[t.pos[1]][1], t.box[1], (t.box[2] + t.box[4]) / 2)
-      return row ~= nil
-    end, targets)
+    targets = visible
     table.sort(targets, function(a, b)
       if a.dist ~= b.dist then return a.dist < b.dist end
       return a.pos[1] < b.pos[1] or a.pos[1] == b.pos[1] and a.pos[2] < b.pos[2]
@@ -1499,7 +1546,8 @@ local function unload(buf)
   uncover(st)
   close_pane(st)
   if st.history and api.nvim_buf_is_valid(st.history) then api.nvim_buf_delete(st.history, { force = true }) end
-  if helper.proc then request('close', { key = buf }, function() end) end
+  local source = st.html and browser or helper
+  if source.proc then source.request('close', { key = buf }, function() end) end
 end
 
 local load
@@ -1542,6 +1590,7 @@ local function write(buf, target)
 end
 
 local function setup_buffer(buf)
+  local is_html = states[buf].html
   local group = api.nvim_create_augroup('pdfview.' .. buf, { clear = true })
   local function au(events, fn) api.nvim_create_autocmd(events, { group = group, buffer = buf, callback = fn }) end
   au({ 'CursorMoved', 'ModeChanged' }, function()
@@ -1557,7 +1606,7 @@ local function setup_buffer(buf)
       if st and st.host and not (covered(st) and api.nvim_win_get_buf(st.host) == buf) then uncover(st) end
     end)
   end)
-  au('BufWriteCmd', function(ev) write(buf, ev.match) end)
+  if not is_html then au('BufWriteCmd', function(ev) write(buf, ev.match) end) end
   -- :e! unloads and immediately re-reads the buffer; only tear down for real unloads.
   au('BufUnload', function()
     vim.schedule(function()
@@ -1571,35 +1620,37 @@ local function setup_buffer(buf)
   local function map(mode, lhs, fn, desc)
     for _, l in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
       if l then
-        vim.keymap.set(mode, l, fn, { buffer = buf, desc = 'PDF: ' .. desc })
+        vim.keymap.set(mode, l, fn, { buffer = buf, desc = (is_html and 'HTML: ' or 'PDF: ') .. desc })
         if mode == 'n' then own[l] = fn end
       end
     end
   end
-  local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
-  map({ 'n', 'x' }, prefixed 'y', function() snapshot(buf) end, 'copy snapshot for agent')
-  map('x', prefixed 'h', function() annotate(buf, 'highlight') end, 'highlight selection')
-  map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
-  map('x', prefixed 's', function() annotate(buf, 'strikeout') end, 'strike out selection')
-  map('x', prefixed 'n', function() annotate(buf, 'highlight', true) end, 'highlight selection with note')
-  map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
-  map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
-  map('n', prefixed 'l', function() list(buf) end, 'list annotations')
-  -- Marks also remember the page view, which a later jump to them restores (view_for).
-  map('n', 'm', function()
-    local mark = vim.fn.getcharstr()
-    local st = states[buf]
-    if st and st.view and covered(st) and api.nvim_get_current_win() == st.focus then
-      local lnum = api.nvim_win_get_cursor(st.focus)[1]
-      st.views[lnum] = (line_span(st, st.layout, lnum) - st.top) / st.top_width
-    end
-    pcall(vim.cmd.normal, { 'm' .. mark, bang = true })
-  end, 'set a mark that also remembers the page view')
-  map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
-  map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
-  map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
-  map('n', keys.next_annotation, function() jump(buf, 1, vim.v.count1) end, 'next annotation')
-  map('n', keys.prev_annotation, function() jump(buf, -1, vim.v.count1) end, 'previous annotation')
+  if not is_html then
+    local function prefixed(suffix) return keys.prefix and keys.prefix .. suffix end
+    map({ 'n', 'x' }, prefixed 'y', function() snapshot(buf) end, 'copy snapshot for agent')
+    map('x', prefixed 'h', function() annotate(buf, 'highlight') end, 'highlight selection')
+    map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
+    map('x', prefixed 's', function() annotate(buf, 'strikeout') end, 'strike out selection')
+    map('x', prefixed 'n', function() annotate(buf, 'highlight', true) end, 'highlight selection with note')
+    map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
+    map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
+    map('n', prefixed 'l', function() list(buf) end, 'list annotations')
+    -- Marks also remember the page view, which a later jump to them restores (view_for).
+    map('n', 'm', function()
+      local mark = vim.fn.getcharstr()
+      local st = states[buf]
+      if st and st.view and covered(st) and api.nvim_get_current_win() == st.focus then
+        local lnum = api.nvim_win_get_cursor(st.focus)[1]
+        st.views[lnum] = (line_span(st, st.layout, lnum) - st.top) / st.top_width
+      end
+      pcall(vim.cmd.normal, { 'm' .. mark, bang = true })
+    end, 'set a mark that also remembers the page view')
+    map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')
+    map('n', keys.undo, function() undo_annotations(buf, false, vim.v.count1) end, 'undo annotation change')
+    map('n', keys.redo, function() undo_annotations(buf, true, vim.v.count1) end, 'redo annotation change')
+    map('n', keys.next_annotation, function() jump(buf, 1, vim.v.count1) end, 'next annotation')
+    map('n', keys.prev_annotation, function() jump(buf, -1, vim.v.count1) end, 'previous annotation')
+  end
 
   if pcall(require, 'leap') then
     for _, k in ipairs(leap_keys()) do
@@ -1640,17 +1691,12 @@ local function setup_buffer(buf)
   page_map('<C-u>', function(st) scroll_by(buf, -(vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2)) end, 'scroll the page up half a screen')
   page_map('<C-f>', function(st) scroll_by(buf, (st.top_height - rows(2)) * vim.v.count1) end, 'scroll the page down a screen')
   page_map('<C-b>', function(st) scroll_by(buf, -(st.top_height - rows(2)) * vim.v.count1) end, 'scroll the page up a screen')
-  page_map('<ScrollWheelDown>', function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'scroll the page down', { mouse = true })
-  page_map('<ScrollWheelUp>', function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'scroll the page up', { mouse = true })
   page_map('zt', function() align(buf, 0) end, 'cursor line to the top of the view')
   page_map('zz', function() align(buf, 0.5) end, 'cursor line to the middle of the view')
   page_map('zb', function() align(buf, 1) end, 'cursor line to the bottom of the view')
   page_map('H', function() screen_line(buf, 0) end, 'cursor to the top line in view')
   page_map('M', function() screen_line(buf, 0.5) end, 'cursor to the middle line in view')
   page_map('L', function() screen_line(buf, 1) end, 'cursor to the bottom line in view')
-  page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
-  page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
-  page_map('<LeftDrag>', function() end, 'ignore drags on the page', { mouse = true })
   local pager = { pager = true }
   local function half(st) return vim.v.count > 0 and rows(vim.v.count) or st.top_height / 2 end
   page_map({ 'j', '<Down>', '<CR>' }, function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'pager: pan down', pager)
@@ -1660,9 +1706,33 @@ local function setup_buffer(buf)
   page_map('gg', function(st) scroll_by(buf, -st.top) end, 'pager: pan to the start', pager)
   page_map('G', function(st) scroll_by(buf, st.layout.total) end, 'pager: pan to the end', pager)
   page_map('c', function() set_pager(buf, false) end, 'pager: cursor mode', pager)
-  map({ 'n', 'x' }, '<LeftMouse>', function()
-    if not click(buf) then api.nvim_feedkeys(vim.keycode '<LeftMouse>', 'n', false) end
-  end, 'move the cursor to the clicked character')
+  if is_html then
+    local function mouse(lhs, action, desc)
+      map({ 'n', 'x' }, lhs, function()
+        if not html_pointer(buf, action) then api.nvim_feedkeys(vim.keycode(lhs), 'n', false) end
+      end, desc)
+    end
+    mouse('<LeftMouse>', 'down', 'press at the pointer')
+    mouse('<LeftRelease>', 'up', 'release at the pointer')
+    mouse('<LeftDrag>', 'move', 'drag the pointer')
+    mouse('<MouseMove>', 'move', 'move the pointer')
+    local function wheel(lhs, x, y)
+      page_map(lhs, function() html_pointer(buf, 'wheel', rows(x * vim.v.count1), rows(y * vim.v.count1)) end, 'scroll at the pointer', { mouse = true })
+    end
+    wheel('<ScrollWheelDown>', 0, 3)
+    wheel('<ScrollWheelUp>', 0, -3)
+    wheel('<ScrollWheelRight>', 3, 0)
+    wheel('<ScrollWheelLeft>', -3, 0)
+  else
+    page_map('<ScrollWheelDown>', function() scroll_by(buf, rows(3 * vim.v.count1)) end, 'scroll the page down', { mouse = true })
+    page_map('<ScrollWheelUp>', function() scroll_by(buf, -rows(3 * vim.v.count1)) end, 'scroll the page up', { mouse = true })
+    page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
+    page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
+    page_map('<LeftDrag>', function() end, 'ignore drags on the page', { mouse = true })
+    map({ 'n', 'x' }, '<LeftMouse>', function()
+      if not click(buf) then api.nvim_feedkeys(vim.keycode '<LeftMouse>', 'n', false) end
+    end, 'move the cursor to the clicked character')
+  end
 end
 
 load = function(buf)
@@ -1708,6 +1778,41 @@ load = function(buf)
     end)
   end
   refresh(buf)
+end
+
+local function open_html(path)
+  if path:sub(1, 7) == 'file://' then path = vim.uri_to_fname(path) end
+  path = canonical(path)
+  local ok, reason = kitty.supported()
+  if ok and not kitty.cell_size() then ok, reason = false, 'the terminal does not report its size in pixels' end
+  if not ok then error('no HTML view: ' .. reason, 0) end
+  local name = 'htmlview:' .. vim.uri_from_fname(path):sub(6)
+  local existing = vim.fn.bufnr(name)
+  if states[existing] and api.nvim_buf_is_loaded(existing) then
+    api.nvim_set_current_buf(existing)
+    return refresh(existing)
+  end
+  local win = api.nvim_get_current_win()
+  local width, height = pane_size(win)
+  local buf = existing >= 0 and existing or api.nvim_create_buf(true, true)
+  local opened, result = pcall(browser.call, 'open', { key = buf, path = path, width = width, height = height })
+  if not opened then
+    if existing < 0 then api.nvim_buf_delete(buf, { force = true }) end
+    error(result, 0)
+  end
+  if existing < 0 then api.nvim_buf_set_name(buf, name) end
+  for option, value in pairs { buftype = 'nofile', swapfile = false, undolevels = -1, modifiable = false } do
+    vim.bo[buf][option] = value
+  end
+  local st = { html = true, pager = true, top = result.top, top_height = height, html_width = width, lines = { '' }, follow_lnum = 1, follow_col = 0 }
+  states[buf] = st
+  html.update(st, buf, result)
+  setup_buffer(buf)
+  vim.bo[buf].filetype = 'htmlview'
+  if api.nvim_win_is_valid(win) then
+    api.nvim_win_set_buf(win, buf)
+    refresh(buf)
+  end
 end
 
 --- Summary of the frames rendered while $PDFVIEW_PROFILE was set: their count, the
@@ -1760,6 +1865,10 @@ function M.setup(opts)
     end)
   end, NS)
   api.nvim_create_autocmd('ColorScheme', { group = GROUP, callback = set_hls })
+  api.nvim_create_user_command('HtmlView', function(args)
+    local ok, err = pcall(open_html, args.fargs[1])
+    if not ok then notify('Cannot open ' .. args.args .. ': ' .. err, vim.log.levels.ERROR) end
+  end, { nargs = 1, complete = 'file', desc = 'Read a local HTML file in a continuous, rendered view' })
   api.nvim_create_autocmd('BufReadCmd', {
     group = GROUP,
     pattern = '*.[pP][dD][fF]',

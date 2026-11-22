@@ -129,7 +129,7 @@ HTML mode uses Google Chrome if installed and installs Playwright via `uv` on
 first use. For bundled Chromium instead, run this from the plugin directory:
 
 ```sh
-uv run --script python/html.py --install-chromium
+uv run --script python/html_helper.py --install-chromium
 ```
 
 None of these additional dependencies are needed for PDF mode.
