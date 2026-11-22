@@ -47,6 +47,9 @@ pane's image under the same id. The helper rasterizes each page once and keeps i
 it caches the scrollbar track too, so a PDF scroll step mostly copies pixels. PDF and
 HTML share the scrollbar painter; HTML lays out the page in a narrower Chromium
 viewport so the bar sits beside the content instead of on top of it.
+The HTML viewport uses CSS pixels, with Chromium's device scale estimated from
+the terminal cell height. Frames and text geometry use backing pixels, keeping
+text readable on Retina displays without enlarging a low-resolution bitmap.
 HTML freezes the page and caches RGB strips rather than taking screenshots on
 every scroll. The helper sends text at layout time for native Vim commands, but
 measures wrapped lines and character boxes only when the viewer needs coordinates.

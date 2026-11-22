@@ -9,7 +9,7 @@ from base64 import b64decode, b64encode
 from collections import OrderedDict
 from html import escape
 import json
-from math import sqrt
+from math import ceil, sqrt
 import os
 from pathlib import Path
 import sys
@@ -23,15 +23,17 @@ from scrollbar import Scrollbar
 RASTER_CACHE_BYTES = 128 * 1024**2
 
 
-async def set_viewport(cdp, width, height):
-    # Set CSS metrics without resizing Chrome's native window. On macOS the
-    # window's minimum size can otherwise race emulation after a pane resize.
+async def set_viewport(cdp, width, height, scale):
+    # Keep CSS pixels logical but render at the terminal's backing resolution.
+    # Do not resize Chrome's native window: its minimum size can race emulation.
+    css_width, css_height = ceil(width / scale), ceil(height / scale)
     await cdp.send("Emulation.setDeviceMetricsOverride", {
-        "width": width, "height": height, "deviceScaleFactor": 1, "mobile": False,
+        "width": css_width, "height": css_height, "deviceScaleFactor": scale, "mobile": False,
     })
+    return css_width, css_height
 
 
-def paint_marks(pix, clip, layers):
+def paint_marks(pix, clip, layers, scale):
     if not layers:
         return
     with pymupdf.open() as doc:
@@ -47,7 +49,7 @@ def paint_marks(pix, clip, layers):
                     shape.draw_rect(rect - (clip.x0, clip.y0, clip.x0, clip.y0))
             if shape.draw_cont:
                 shape.finish(color=color if outline else None, fill=None if outline else color,
-                             fill_opacity=0.45, width=1)
+                             fill_opacity=0.45, width=scale)
         shape.commit()
         mupdf = pymupdf.mupdf
         device = mupdf.fz_new_draw_device(mupdf.FzMatrix(), pix.this)
@@ -84,15 +86,20 @@ class Document:
         self.strips = OrderedDict()
 
     async def resize(self, args):
-        size = (args["width"], args["height"])
+        size = (args["width"], args["height"], args["scale"])
         if size != self.size:
-            await set_viewport(self.cdp, *size)
+            self.css_size = await set_viewport(self.cdp, *size)
             self.size = size
 
     async def layout(self, args):
         await self.resize(args)
         layout = await self.page.evaluate("() => __pdfview.layout()")
-        self.total, self.wide = layout["total"], layout["wide"]
+        width, height, scale = self.size
+        css_width, css_height = self.css_size
+        # Ceil the CSS viewport to cover odd backing dimensions, but do not
+        # make the excess backing pixels reachable unless the document overflows.
+        layout["total"] = self.total = height if layout["total"] <= css_height else layout["total"] * scale
+        layout["wide"] = self.wide = width if layout["wide"] <= css_width else layout["wide"] * scale
         self.strips.clear()
         self.cache_bytes = 0
         self.spans = None
@@ -102,10 +109,16 @@ class Document:
     async def geometry(self, args):
         if self.spans is None:
             self.spans = await self.page.evaluate("() => __pdfview.geometry()")
+            scale = self.size[2]
+            if scale != 1:
+                for line in self.spans:
+                    for span in line:
+                        span[2] *= scale
+                        span[3] *= scale
         return self.spans
 
     async def strip(self, left, y, width, height):
-        key = (left, y)
+        key = (left, y, width)
         if key in self.strips:
             self.strips.move_to_end(key)
             return self.strips[key]
@@ -126,23 +139,33 @@ class Document:
         self.cache_bytes += size
         return pix
 
+    def pixel_boxes(self, boxes):
+        scale = self.size[2]
+        if scale == 1:
+            return boxes
+        return [[n * scale for n in box] if box is not None else None for box in boxes]
+
     async def rectangles(self, ranges):
-        return await self.page.evaluate("ranges => __pdfview.rectangles(ranges)", ranges)
+        return self.pixel_boxes(await self.page.evaluate("ranges => __pdfview.rectangles(ranges)", ranges))
 
     async def frame(self, args, marks, bar=None):
-        width, height = self.size
+        width, height, scale = self.size
         top = min(max(0, args["top"]), max(0, self.total - height))
         left = min(max(0, args["left"]), max(0, self.wide - width))
         clip = pymupdf.Rect(left, top, left + width, top + height)
         pix = pymupdf.Pixmap(pymupdf.csRGB, (0, 0, width + (bar["width"] if bar else 0), height), False)
-        # A few strips fit even at large viewport sizes. Capture misses only.
-        strip_height = min(height, max(1, RASTER_CACHE_BYTES // (4 * width * 3)))
-        bottom = max(height, self.total)
-        for y in range(top // strip_height * strip_height, top + height, strip_height):
-            strip = await self.strip(left, y, width, min(strip_height, bottom - y))
-            strip.set_origin(0, y - top)
-            pix.copy(strip, (0, max(0, y - top), width, min(height, y - top + strip.height)))
-        paint_marks(pix, clip, await self.layers(marks))
+        # Chromium captures whole CSS pixels. Align the strips to that grid
+        # and crop the backing pixels when panning or sizing the terminal.
+        strip_height = min(self.css_size[1], max(1, RASTER_CACHE_BYTES // (4 * width * scale * 3)))
+        start_x, inset = divmod(left, scale)
+        strip_width = ceil((width + inset) / scale)
+        bottom = ceil(self.total / scale)
+        for y in range(top // (strip_height * scale) * strip_height, ceil((top + height) / scale), strip_height):
+            strip = await self.strip(start_x, y, strip_width, min(strip_height, bottom - y))
+            offset = y * scale - top
+            strip.set_origin(-inset, offset)
+            pix.copy(strip, (0, max(0, offset), width, min(height, offset + strip.height)))
+        paint_marks(pix, clip, await self.layers(marks), scale)
         if bar:
             self.bar.draw(pix, top, self.total, bar, self.line_y, version=self.spans is not None)
         return pix, clip
@@ -154,7 +177,7 @@ class Document:
             "groups => groups.map(ranges => __pdfview.rectangles(ranges))",
             [mark["ranges"] for mark in marks],
         )
-        return zip(marks, boxes)
+        return ((mark, self.pixel_boxes(group)) for mark, group in zip(marks, boxes))
 
     def line_y(self, lnum):
         if self.spans is not None and 1 <= lnum <= len(self.spans) and self.spans[lnum - 1]:
@@ -179,18 +202,21 @@ class Document:
                 visible = pymupdf.Rect(rect) & clip
                 if not visible.is_empty:
                     box |= visible
+        width, height, scale = self.size
         marker = snapshot_marker(None if box.is_empty else box - (clip.x0, clip.y0, clip.x0, clip.y0),
-                                 bool(marks), *self.size)
+                                 bool(marks), width, height)
         png = b64encode(pix.tobytes()).decode("ascii")
         # Compose the caption away from the document to preserve its viewport
         # and prevent the document's styles/scripts from changing the caption.
         caption = await self.page.context.new_page()
         try:
-            await set_viewport(await caption.context.new_cdp_session(caption), *self.size)
+            # Compose in backing pixels so the captured frame is not resampled.
+            await set_viewport(await caption.context.new_cdp_session(caption), width, height, 1)
             await caption.set_content(f"""
                 <!doctype html><meta charset="utf-8">
                 <style>
-                    body {{margin:0; color:#222; background:white; font:clamp(14px,1.25vw,24px) sans-serif}}
+                    body {{margin:0; color:#222; background:white;
+                           font:clamp({14 * scale}px,1.25vw,{24 * scale}px) sans-serif}}
                     .frame {{position:relative; overflow:hidden}}
                     img {{display:block; width:100%}}
                     svg {{position:absolute; inset:0; width:100%; height:100%}}
@@ -205,7 +231,7 @@ class Document:
         return {}
 
     async def char_boxes(self, args):
-        return await self.page.evaluate("chars => __pdfview.boxes(chars)", args["chars"])
+        return self.pixel_boxes(await self.page.evaluate("chars => __pdfview.boxes(chars)", args["chars"]))
 
 
 class Backend:

@@ -24,7 +24,7 @@ class StaticHtmlTest(unittest.IsolatedAsyncioTestCase):
                     <style>
                     body { margin: 0 }
                     section { height: 100vh }
-                    #first { background: red }
+                    #first { min-width: 300px; background: linear-gradient(to right, orange 100px, red 100px) }
                     #second { background: blue }
                     #last { background: green; height: 50px }
                     #pinned { position: fixed; top: 0; height: 40px; background: gold }
@@ -36,7 +36,7 @@ class StaticHtmlTest(unittest.IsolatedAsyncioTestCase):
                     <section id="second"><div id="reflow">one two three four five six seven eight nine ten</div></section>
                     <section id="last">Ending</section>''', encoding="utf-8")
                 try:
-                    layout = await backend.open(dict(key=1, path=str(path), width=220, height=120))
+                    layout = await backend.open(dict(key=1, path=str(path), width=220, height=120, scale=1))
                     doc = backend.docs[1]
                     self.assertEqual(await doc.page.title(), "")
                     await doc.page.mouse.click(20, 9)
@@ -56,7 +56,7 @@ class StaticHtmlTest(unittest.IsolatedAsyncioTestCase):
                     restored, _ = await doc.frame(dict(top=110, left=0), [])
                     self.assertEqual(restored.samples, bare.samples)
 
-                    await doc.layout(dict(width=340, height=150))
+                    await doc.layout(dict(width=340, height=150, scale=1))
                     reflowed = (await doc.geometry({}))[line - 1]
                     self.assertLess(len(reflowed), len(wrapped))
                     self.assertAlmostEqual(reflowed[0][2] - wrapped[0][2], 30)
@@ -69,6 +69,29 @@ class StaticHtmlTest(unittest.IsolatedAsyncioTestCase):
                     await doc.snapshot(dict(top=140, left=0, ranges=[[line, 0, 2]], color=0xFFFF00,
                                             caption="Selection context", out=str(snapshot)))
                     self.assertGreater(html.pymupdf.Pixmap(snapshot).height, resized.height)
+
+                    # The same CSS viewport at 2x, cropped to an odd backing size.
+                    await doc.layout(dict(width=439, height=239, scale=2))
+                    retina_wrap = (await doc.geometry({}))[line - 1]
+                    self.assertEqual(retina_wrap, [[a, b, 2 * y0, 2 * y1] for a, b, y0, y1 in wrapped])
+                    pan = dict(top=221, left=1)
+                    retina, _ = await doc.frame(pan, [])
+                    self.assertEqual((retina.width, retina.height), (439, 239))
+                    self.assertEqual(retina.pixel(198, 18), (255, 165, 0))
+                    self.assertEqual(retina.pixel(199, 18), (255, 0, 0))
+                    self.assertEqual(retina.pixel(199, 19), (255, 215, 0))
+                    self.assertEqual(retina.pixel(199, 99), (0, 0, 255))
+                    retina_box = (await doc.char_boxes(dict(chars=[[line, 0]])))[0]
+                    self.assertEqual(retina_box, [2 * coord for coord in box])
+                    x = int((retina_box[0] + retina_box[2]) / 2) - pan["left"]
+                    y = int((retina_box[1] + retina_box[3]) / 2) - pan["top"]
+                    marked, _ = await doc.frame(pan, [dict(ranges=[[line, 0, 0]], color=0xFFFF00)])
+                    self.assertNotEqual(marked.pixel(x, y), retina.pixel(x, y))
+                    await doc.snapshot(dict(**pan, ranges=[[line, 0, 0]], color=0xFFFF00, out=str(snapshot)))
+                    exported = html.pymupdf.Pixmap(snapshot)
+                    self.assertEqual(exported.width, retina.width)
+                    self.assertEqual(exported.pixel(199, 99), marked.pixel(199, 99))
+                    self.assertGreater(exported.height, retina.height)
                 finally:
                     if backend.browser:
                         await backend.browser.close()

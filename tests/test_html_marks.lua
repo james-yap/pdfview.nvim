@@ -4,8 +4,12 @@ vim.opt.rtp:prepend(vim.fn.getcwd())
 vim.o.columns, vim.o.lines, vim.o.mouse = 80, 24, 'a'
 local kitty = require 'pdfview.kitty'
 kitty.supported = function() return true end
-kitty.cell_size = function() return { width = 10, height = 20 } end
-kitty.show = function(path) os.remove(path); return 1 end
+kitty.cell_size = function() return { width = 18, height = 37 } end
+kitty.show = function(path, _, _, opts)
+  assert(vim.uv.fs_stat(path).size == opts.size[1] * opts.size[2] * 3, 'frame must fill the backing pixel grid')
+  os.remove(path)
+  return 1
+end
 kitty.delete = function() end
 local messages = {}
 vim.notify = function(msg) messages[#messages + 1] = msg end

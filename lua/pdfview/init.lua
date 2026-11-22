@@ -349,6 +349,15 @@ local function pane_size(win)
   return math.floor(cols * cell.width), math.floor(rows * cell.height), cols, rows
 end
 
+local function html_pane_size(win)
+  local width, height, cols, rows = pane_size(win)
+  -- The tty reports backing pixels, not display points. Estimate the browser
+  -- density from the font's cell height: a normal 20px cell is about 40px at 2x.
+  local scale = math.max(1, math.floor(kitty.cell_size().height / 20 + 0.5))
+  local bar_width = html_scrollbar_width(width)
+  return { width = width - bar_width, height = height, scale = scale }, cols, rows, bar_width
+end
+
 local function cursor_span(st, L, lnum, col)
   if not st.html then return line_span(st, L, lnum) end
   local r = html.fragment(L, lnum, char_index(st.lines[lnum], col))
@@ -652,9 +661,9 @@ end
 
 local function render_html(buf, st)
   if st.html_measuring then return end
-  local width, height, cols, rows = pane_size(st.pane.win)
-  local bar_width = html_scrollbar_width(width)
-  local content_width = width - bar_width
+  local viewport, cols, rows, bar_width = html_pane_size(st.pane.win)
+  local content_width, height = viewport.width, viewport.height
+  local width = content_width + bar_width
   local pane_buf = st.pane.buf
   local function current()
     return states[buf] == st and covered(st) and pane_valid(st) and st.pane.buf == pane_buf
@@ -666,15 +675,17 @@ local function render_html(buf, st)
     if err then notify(err, vim.log.levels.ERROR) end
     return states[buf] == st and not err and again
   end
-  local resized = st.html_width ~= content_width or st.top_height ~= height
+  local resized = st.html_width ~= content_width or st.top_height ~= height or st.html_scale ~= viewport.scale
   if resized then
     st.busy, st.html_resizing = true, true
-    browser.request('layout', { key = buf, width = content_width, height = height }, function(err, res)
+    viewport.key = buf
+    browser.request('layout', viewport, function(err, res)
       st.html_resizing = nil
       finish(err)
       if err or states[buf] ~= st or not api.nvim_buf_is_loaded(buf) then return end
       html.update(st, buf, res)
-      st.html_width, st.top_height, st.render_key, st.view = content_width, height, nil, nil
+      st.html_width, st.top_height, st.html_scale = content_width, height, viewport.scale
+      st.render_key, st.view = nil, nil
       if not st.pager then st.follow_lnum = nil end
       render(buf)
     end)
@@ -1885,10 +1896,10 @@ local function open_html(path)
     return show_html(existing)
   end
   local win = api.nvim_get_current_win()
-  local width, height = pane_size(win)
-  width = width - html_scrollbar_width(width)
+  local viewport = html_pane_size(win)
   local buf = existing >= 0 and existing or api.nvim_create_buf(true, true)
-  local opened, result = pcall(browser.call, 'open', { key = buf, path = path, width = width, height = height })
+  viewport.key, viewport.path = buf, path
+  local opened, result = pcall(browser.call, 'open', viewport)
   if not opened then
     if existing < 0 then api.nvim_buf_delete(buf, { force = true }) end
     error(result, 0)
@@ -1896,7 +1907,8 @@ local function open_html(path)
   if st and api.nvim_buf_is_loaded(buf) then
     html.update(st, buf, result)
     st.mark_views = {}
-    st.stat, st.html_width, st.top_height, st.render_key, st.view = stamp, width, height, nil, nil
+    st.html_width, st.top_height, st.html_scale = viewport.width, viewport.height, viewport.scale
+    st.stat, st.render_key, st.view = stamp, nil, nil
     if not st.pager then st.follow_lnum = nil end
     st.source_path = source_path
     return show_html(buf)
@@ -1905,7 +1917,8 @@ local function open_html(path)
   for option, value in pairs { buftype = 'nofile', swapfile = false, undolevels = -1, modifiable = false } do
     vim.bo[buf][option] = value
   end
-  local st = { html = true, pager = true, top = 0, left = 0, top_height = height, html_width = width, html_anchor = true, lines = { '' }, follow_lnum = 1, follow_col = 0 }
+  local st = { html = true, pager = true, top = 0, left = 0, html_anchor = true, lines = { '' }, follow_lnum = 1, follow_col = 0 }
+  st.html_width, st.top_height, st.html_scale = viewport.width, viewport.height, viewport.scale
   st.mark_views = {}
   st.source_path, st.stat = source_path, stamp
   states[buf] = st
