@@ -1290,7 +1290,7 @@ local function hover_note(buf)
       local boxes = try_call('char_boxes', { key = buf, chars = { { lnum, char_index(st.lines[lnum], col) } } })
       if boxes then
         local box = boxes[1]
-        local row, column = cell_at(st, st.info[lnum][1], box[1], box[4])
+        local row, column = cell_at(st, st.info[lnum][1], { box[1], box[4], box[3], box[4] })
         if row then
           local width, height = api.nvim_win_get_width(win), api.nvim_win_get_height(win)
           row = row + height + 3 <= view.rows and row + 1 or math.max(0, row - height - 2)
