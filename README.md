@@ -117,6 +117,7 @@ motions, search and visual selection work on the page text. `<Esc>` goes back.
 Local `.html` and `.htm` files open in the rendered view by default. Use
 `:HtmlSource` to edit the file and `:HtmlView` to return to the preview.
 The preview reads the saved file; unsaved edits stay in the source buffer.
+Run `:e!` in the preview to reload it after the file changes on disk.
 If rendering is unavailable, Neovim shows the source instead.
 You can also open a specific file with `:HtmlView path/to/notes.html`
 (or pass a `file://` URL). The rendered view is continuous and reflows with the
