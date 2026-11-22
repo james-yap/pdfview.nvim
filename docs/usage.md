@@ -109,16 +109,18 @@ set the mark or left. Other moves scroll just enough to show the cursor.
 
 ## Scrollbar
 
-The bar at the right edge maps the whole document:
+The bar at the right edge maps the whole document in PDF and HTML. In PDFs it also
+shows page boundaries and annotations (with a darker end when they carry a note).
+Both views show:
 
-- thin lines between pages,
-- annotations in their own colour, with a darker end when they carry a note,
 - lines matching the search, in orange,
 - marks `a`–`z` and `'` (where `''` returns to), as small labels,
 - in cursor mode, the cursor line as a blue rule,
 - a see-through box over the part in view.
 
-Below the bar, a badge shows the page in the middle of the view and the page count,
+HTML reflows to leave a gutter for the bar, so it does not cover the document.
+
+In PDFs, a badge below the bar shows the page in the middle of the view and the page count,
 after `CURSOR` in cursor mode. Its highlight group is `PdfViewPage`, linked to
 `StatusLine` by default.
 

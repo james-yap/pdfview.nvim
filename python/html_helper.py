@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["playwright>=1.55,<2"]
+# dependencies = ["playwright>=1.55,<2", "pymupdf>=1.26,<1.27"]
 # ///
 """The optional Chromium process, using the same line protocol as helper.py."""
 
@@ -11,7 +11,10 @@ from pathlib import Path
 import sys
 import traceback
 
+import pymupdf
 from playwright.async_api import Error, async_playwright
+
+from scrollbar import Scrollbar
 
 
 class Document:
@@ -24,13 +27,30 @@ class Document:
         size = {axis: args[axis] for axis in ("width", "height")}
         if size != self.page.viewport_size:
             await self.page.set_viewport_size(size)
-        return await self.page.evaluate("() => __pdfview.layout()")
+        layout = await self.page.evaluate("() => __pdfview.layout()")
+        self.total, self.spans = layout["total"], layout["spans"]
+        self.bar = Scrollbar()
+        return layout
+
+    def line_y(self, lnum):
+        if 1 <= lnum <= len(self.spans) and self.spans[lnum - 1]:
+            _, _, y0, y1 = self.spans[lnum - 1][0]
+            return (y0 + y1) / 2
 
     async def render(self, args):
         top = await self.page.evaluate("args => __pdfview.frame(args)", {
             "top": args["top"], "marks": args["marks"],
         })
-        await self.page.screenshot(path=args["out"], type="png", scale="css")
+        pix = pymupdf.Pixmap(await self.page.screenshot(type="png", scale="css"))
+        if pix.alpha:
+            pix = pymupdf.Pixmap(pix, 0)
+        if bar := args.get("scrollbar"):
+            frame = pymupdf.Pixmap(pymupdf.csRGB, (0, 0, pix.width + bar["width"], pix.height), False)
+            frame.copy(pix, pix.irect)
+            self.bar.draw(frame, top, self.total, bar, self.line_y)
+            pix = frame
+        with open(args["out"], "wb") as f:
+            f.write(pix.samples_mv)
         return {"top": top}
 
     async def char_boxes(self, args):

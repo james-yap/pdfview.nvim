@@ -1,18 +1,17 @@
 import hashlib
-import importlib.util
 import tempfile
 import os
 import shutil
 import subprocess
+import sys
 import unittest
 from unittest import mock
 from pathlib import Path
 
 import pymupdf
 
-spec = importlib.util.spec_from_file_location("helper", Path(__file__).parents[1] / "python/helper.py")
-helper = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(helper)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+import helper
 
 
 class PageViewTest(unittest.TestCase):

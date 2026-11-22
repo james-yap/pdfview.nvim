@@ -44,8 +44,9 @@ closes the PDF window.
 buffer, so splits and floats cover it correctly. Frames reach the terminal as temporary
 files of raw RGB, which the terminal deletes after reading. Each frame replaces the
 pane's image under the same id. The helper rasterizes each page once and keeps it, and
-it keeps the scrollbar too, so a scroll step mostly copies pixels. The scrollbar is
-drawn as vector shapes on a small page and turned into pixels in one call.
+it caches the scrollbar track too, so a PDF scroll step mostly copies pixels. PDF and
+HTML share the scrollbar painter; HTML lays out the page in a narrower Chromium
+viewport so the bar sits beside the content instead of on top of it.
 
 ## Filetypes and highlight groups
 

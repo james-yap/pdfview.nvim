@@ -19,6 +19,7 @@ function M.update(st, buf, layout)
     api.nvim_buf_set_lines(buf, first - 1, last, false, replace)
     vim.bo[buf].modifiable = false
     vim.bo[buf].modified = false
+    st.search_lines = nil
   end
   st.lines, st.layout = new, layout
 end

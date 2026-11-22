@@ -330,6 +330,11 @@ local function clamp_top(L, height, top) return math.floor(math.max(0, math.min(
 --- Width in pixels of the scrollbar the helper draws at the right edge of a view `width` pixels wide.
 local function scrollbar_width(width) return math.max(12, math.floor(width / 60)) end
 
+local function html_scrollbar_width(width)
+  local bar = scrollbar_width(width)
+  return width >= 2 * bar and bar or 0
+end
+
 --- Identifies the jumplist of `win`: it changes on every jump (marks, '', <C-o>, n, ...).
 local function jumplist_key(win)
   local list, idx = unpack(vim.fn.getjumplist(win))
@@ -417,7 +422,7 @@ local function update_badge(st, view)
     relative = 'win',
     win = st.pane.win,
     row = view.rows - 1,
-    col = view.cols - math.ceil(scrollbar_width(view.width) / kitty.cell_size().width) - width,
+    col = view.cols - math.ceil((view.bar_width or scrollbar_width(view.width)) / kitty.cell_size().width) - width,
     width = width,
     height = 1,
   }
@@ -520,9 +525,9 @@ end
 
 --- What the scrollbar marks besides annotations: every line matching the search,
 --- marks a-z and ' (where '' returns to), and the cursor line (not in pager mode).
-local function scrollbar_for(buf, view)
+local function scrollbar_for(buf, width)
   local st = states[buf]
-  local bar = { width = scrollbar_width(view.width), marks = {} }
+  local bar = { width = width, marks = {} }
   local pattern = search_pattern(st)
   if pattern and (st.search_lines or {}).pattern ~= pattern then
     local ok, matches = pcall(vim.fn.matchbufline, buf, pattern, 1, '$')
@@ -548,17 +553,15 @@ local function scrollbar_for(buf, view)
   return bar
 end
 
---- Point the pane at a freshly rendered frame (the terminal deletes the file): raw RGB
---- of view.width x view.height pixels, or a PNG when the view has no pixel size (the
---- note preview). While the pane keeps its size, each frame replaces its image in
+--- Point the pane at a freshly rendered RGB frame (the terminal deletes the file).
+--- While the pane keeps its size, each frame replaces its image in
 --- place, so its cells stay as they are and Nvim has nothing to redraw. A new size
 --- needs a new image: Ghostty keeps showing nothing for a replaced image placed at
 --- another size.
 local function show(st, frame, view)
   local pbuf, grid = st.pane.buf, view.cols .. 'x' .. view.rows
   local reuse = st.grid == grid and st.image or nil
-  local size = not st.html and view.width and { view.width, view.height } or nil
-  local id = kitty.show(frame, view.cols, view.rows, { size = size, id = reuse })
+  local id = kitty.show(frame, view.cols, view.rows, { size = { view.width, view.height }, id = reuse })
   if st.grid ~= grid then
     vim.bo[pbuf].modifiable = true
     api.nvim_buf_set_lines(pbuf, 0, -1, false, kitty.placeholders(view.cols, view.rows))
@@ -592,6 +595,8 @@ end
 
 local function render_html(buf, st)
   local width, height, cols, rows = pane_size(st.pane.win)
+  local bar_width = html_scrollbar_width(width)
+  local content_width = width - bar_width
   local pane_buf = st.pane.buf
   local function current()
     return states[buf] == st and covered(st) and pane_valid(st) and st.pane.buf == pane_buf
@@ -603,11 +608,11 @@ local function render_html(buf, st)
     if err then notify(err, vim.log.levels.ERROR) end
     return states[buf] == st and not err and again
   end
-  local resized = st.html_width ~= width or st.top_height ~= height
+  local resized = st.html_width ~= content_width or st.top_height ~= height
   if st.html_dirty or resized then
     st.busy, st.html_dirty = true, nil
     local old_top = st.top
-    browser.request('layout', { key = buf, width = width, height = height }, function(err, res)
+    browser.request('layout', { key = buf, width = content_width, height = height }, function(err, res)
       finish(err)
       if err or not current() then
         if not err and states[buf] == st then
@@ -617,7 +622,7 @@ local function render_html(buf, st)
         return
       end
       html.update(st, buf, res)
-      st.html_width, st.top_height, st.render_key = width, height, nil
+      st.html_width, st.top_height, st.render_key = content_width, height, nil
       if st.top == old_top then
         st.top = res.top
         if resized then
@@ -637,14 +642,18 @@ local function render_html(buf, st)
   end
 
   local view = html_view(st, width, height, cols, rows)
+  view.bar_width, view.content_width = bar_width, content_width
   update_badge(st, view)
   local marks = marks_for(buf, view)
-  local key = vim.json.encode { view.top, marks }
+  local bar = bar_width > 0 and scrollbar_for(buf, bar_width) or nil
+  local search = bar and bar.search and st.search_lines.pattern
+  local key = vim.json.encode { view.top, width, marks, bar and bar.marks, bar and bar.cursor, search }
   if key == st.render_key then return end
   st.render_key, st.busy = key, true
   render_id = render_id + 1
-  local path = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-htmlview-%d-%d.png'):format(vim.fn.getpid(), render_id))
-  browser.request('render', { key = buf, top = view.top, marks = marks, out = path }, function(err, res)
+  local path = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-htmlview-%d-%d.rgb'):format(vim.fn.getpid(), render_id))
+  local params = { key = buf, top = view.top, marks = marks, scrollbar = bar, out = path }
+  browser.request('render', params, function(err, res)
     if not err and current() then
       if st.top == view.top then st.top = res.top end
       view.top, st.view = res.top, view
@@ -682,7 +691,7 @@ render = function(buf)
   local t0 = uv.hrtime()
   local view = view_for(st)
   update_badge(st, view)
-  local marks, bar = marks_for(buf, view), scrollbar_for(buf, view)
+  local marks, bar = marks_for(buf, view), scrollbar_for(buf, scrollbar_width(view.width))
   -- Every key typed comes through here: the search matches enter the key as their
   -- pattern, as encoding thousands of matching lines each time would cost more.
   local search = bar.search and st.search_lines.pattern
@@ -941,14 +950,16 @@ local function html_pointer(buf, action, dx, dy)
     row, col = pos.screenrow - origin[1], pos.screencol - origin[2]
   end
   local v, cell = st.view, kitty.cell_size()
+  local x = (math.max(1, math.min(col, v.cols)) - 0.5) * cell.width
   if action == 'down' then
     if row < 1 or row > v.rows or col < 1 or col > v.cols then return false end
+    if x >= v.content_width then return true end
     st.html_pressed = true
   elseif action == 'up' then
     if not st.html_pressed then return false end
     st.html_pressed = nil
   end
-  local x = (math.max(1, math.min(col, v.cols)) - 0.5) * cell.width
+  if action == 'wheel' then x = math.min(x, v.content_width - 1) end
   local y = (math.max(1, math.min(row, v.rows)) - 0.5) * cell.height
   browser.request('pointer', { key = buf, action = action, x = x, y = y, dx = dx, dy = dy }, function(err, hit)
     if states[buf] ~= st or not covered(st) then return end
@@ -1810,6 +1821,7 @@ local function open_html(path)
   end
   local win = api.nvim_get_current_win()
   local width, height = pane_size(win)
+  width = width - html_scrollbar_width(width)
   local buf = existing >= 0 and existing or api.nvim_create_buf(true, true)
   local opened, result = pcall(browser.call, 'open', { key = buf, path = path, width = width, height = height })
   if not opened then
