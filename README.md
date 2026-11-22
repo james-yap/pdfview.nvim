@@ -112,6 +112,28 @@ motions, search and visual selection work on the page text. `<Esc>` goes back.
 
 [Usage](docs/usage.md) lists every key.
 
+### Read HTML
+
+Use `:HtmlView path/to/notes.html` (or pass a `file://` URL). `:edit` still
+opens the HTML source. The rendered view is continuous and reflows with the
+split; use the existing pager keys, or press `c` for native motions, search,
+visual selection, and yank. Use `"+y` to copy selected text to the system
+clipboard. Leap uses the same key as in PDF view. Yanks contain plain DOM text,
+not the original Typst or LaTeX source.
+
+With `:set mouse=a`, click links and disclosures such as **Answer** or scroll
+with the wheel. Open only HTML you trust: the viewer runs page JavaScript in an
+isolated Chromium context. HTML buffers are read-only and have no annotations.
+
+HTML mode uses Google Chrome if installed and installs Playwright via `uv` on
+first use. For bundled Chromium instead, run this from the plugin directory:
+
+```sh
+uv run --script python/html.py --install-chromium
+```
+
+None of these additional dependencies are needed for PDF mode.
+
 ## Configuration
 
 These are the defaults:

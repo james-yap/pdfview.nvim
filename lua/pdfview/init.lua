@@ -593,6 +593,86 @@ local function ms_since(t) return (uv.hrtime() - t) / 1e6 end
 
 local render_id = 0
 
+local function html_cursor_at(st, y, edge)
+  local lnum, char = html.nearest(st.layout, y, edge)
+  if lnum then api.nvim_win_set_cursor(st.focus, { lnum, byte_index(st.lines[lnum], char) }) end
+  st.follow_lnum, st.follow_col = unpack(api.nvim_win_get_cursor(st.focus))
+end
+
+local function render_html(buf, st)
+  local width, height, cols, rows = pane_size(st.pane.win)
+  local pane_buf = st.pane.buf
+  local function current()
+    return states[buf] == st and covered(st) and pane_valid(st) and st.pane.buf == pane_buf
+  end
+  local function finish(err)
+    st.busy = false
+    local again = st.again
+    st.again = nil
+    if err then notify(err, vim.log.levels.ERROR) end
+    return states[buf] == st and not err and again
+  end
+  local resized = st.html_width ~= width or st.top_height ~= height
+  if st.html_dirty or resized then
+    st.busy, st.html_dirty = true, nil
+    local old_top = st.top
+    browser.request('layout', { key = buf, width = width, height = height }, function(err, res)
+      finish(err)
+      if err or not current() then
+        if not err and states[buf] == st then
+          st.html_dirty = true
+          render(buf)
+        end
+        return
+      end
+      html.update(st, buf, res)
+      st.html_width, st.top_height, st.render_key = width, height, nil
+      if st.top == old_top then
+        st.top = res.top
+        if resized then
+          st.follow_lnum = nil
+        elseif res.top ~= old_top then
+          -- A link or native wheel event scrolled Chromium, not Vim.
+          local lnum, col = unpack(api.nvim_win_get_cursor(st.focus))
+          local a, b = cursor_span(st, st.layout, lnum, col)
+          if st.pager or a < st.top or b > st.top + height then
+            html_cursor_at(st, st.top + margin(height), 0)
+          end
+        end
+      end
+      render(buf)
+    end)
+    return
+  end
+
+  local view = html_view(st, width, height, cols, rows)
+  update_badge(st, view)
+  local marks = marks_for(buf, view)
+  local key = vim.json.encode { view.top, marks }
+  if key == st.render_key then return end
+  st.render_key, st.busy = key, true
+  render_id = render_id + 1
+  local path = vim.fs.joinpath(kitty.tmpdir(), ('tty-graphics-protocol-htmlview-%d-%d.png'):format(vim.fn.getpid(), render_id))
+  browser.request('render', { key = buf, top = view.top, marks = marks, out = path }, function(err, res)
+    if not err and current() then
+      if st.top == view.top then st.top = res.top end
+      view.top, st.view = res.top, view
+      show(st, path, view)
+    else
+      os.remove(path)
+      st.render_key = nil
+    end
+    if finish(err) then render(buf) end
+  end)
+end
+
+html_changed = function(msg)
+  local st = states[msg.key]
+  if msg.event ~= 'change' or not (st and st.html) then return end
+  st.html_dirty = true
+  render(msg.key)
+end
+
 --- Render the pages for `buf`, following the cursor of its hidden float. At most
 --- one render is in flight per buffer; requests arriving meanwhile collapse into one rerun.
 --- A page view in another tab page waits: entering that tab (WinEnter) renders it.
