@@ -378,7 +378,9 @@ local function html_pane_size(win)
   local width, height, cols, rows = pane_size(win)
   -- The tty reports backing pixels, not display points. Estimate the browser
   -- density from the font's cell height: a normal 20px cell is about 40px at 2x.
-  local scale = math.max(1, math.floor(kitty.cell_size().height / 20 + 0.5))
+  -- Quarter steps follow terminal zoom smoothly while keeping CSS pixel grids
+  -- aligned to whole backing pixels every 4 CSS pixels.
+  local scale = math.max(1, math.floor(kitty.cell_size().height / 5 + 0.5) / 4)
   local bar_width = html_scrollbar_width(width)
   return { width = width - bar_width, height = height, scale = scale }, cols, rows, bar_width
 end

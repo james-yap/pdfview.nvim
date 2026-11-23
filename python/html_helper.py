@@ -7,6 +7,7 @@
 import asyncio
 from base64 import b64decode, b64encode
 from collections import OrderedDict
+from fractions import Fraction
 from html import escape
 import json
 from math import ceil, sqrt
@@ -98,8 +99,8 @@ class Document:
         css_width, css_height = self.css_size
         # Ceil the CSS viewport to cover odd backing dimensions, but do not
         # make the excess backing pixels reachable unless the document overflows.
-        layout["total"] = self.total = height if layout["total"] <= css_height else layout["total"] * scale
-        layout["wide"] = self.wide = width if layout["wide"] <= css_width else layout["wide"] * scale
+        layout["total"] = self.total = height if layout["total"] <= css_height else ceil(layout["total"] * scale)
+        layout["wide"] = self.wide = width if layout["wide"] <= css_width else ceil(layout["wide"] * scale)
         self.strips.clear()
         self.cache_bytes = 0
         self.spans = None
@@ -154,15 +155,21 @@ class Document:
         left = min(max(0, args["left"]), max(0, self.wide - width))
         clip = pymupdf.Rect(left, top, left + width, top + height)
         pix = pymupdf.Pixmap(pymupdf.csRGB, (0, 0, width + (bar["width"] if bar else 0), height), False)
-        # Chromium captures whole CSS pixels. Align the strips to that grid
-        # and crop the backing pixels when panning or sizing the terminal.
-        strip_height = min(self.css_size[1], max(1, RASTER_CACHE_BYTES // (4 * width * scale * 3)))
-        start_x, inset = divmod(left, scale)
-        strip_width = ceil((width + inset) / scale)
+        # Chromium captures whole CSS pixels. A fractional scale (k/4) maps
+        # `grid` CSS pixels to `step` whole backing pixels; align the strips to
+        # that grid and crop the backing pixels when panning or sizing the terminal.
+        grid = Fraction(scale).limit_denominator(4).denominator
+        step = round(grid * scale)
+        strip_height = min(self.css_size[1], max(1, RASTER_CACHE_BYTES // (4 * width * ceil(scale) * 3)))
+        strip_height = max(grid, strip_height // grid * grid)
+        strip_step = strip_height // grid * step
+        start_x = left // step * grid
+        inset = left - left // step * step
+        strip_width = ceil((width + inset) / scale / grid) * grid
         bottom = ceil(self.total / scale)
-        for y in range(top // (strip_height * scale) * strip_height, ceil((top + height) / scale), strip_height):
+        for y in range(top // strip_step * strip_height, ceil((top + height) / scale), strip_height):
             strip = await self.strip(start_x, y, strip_width, min(strip_height, bottom - y))
-            offset = y * scale - top
+            offset = y // grid * step - top
             strip.set_origin(-inset, offset)
             pix.copy(strip, (0, max(0, offset), width, min(height, offset + strip.height)))
         paint_marks(pix, clip, await self.layers(marks), scale)

@@ -92,6 +92,17 @@ class StaticHtmlTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(exported.width, retina.width)
                     self.assertEqual(exported.pixel(199, 99), marked.pixel(199, 99))
                     self.assertGreater(exported.height, retina.height)
+
+                    # Terminal zoom gives quarter scales; edges land on whole backing pixels.
+                    await doc.layout(dict(width=275, height=150, scale=1.25))
+                    zoomed_wrap = (await doc.geometry({}))[line - 1]
+                    self.assertEqual(zoomed_wrap, [[a, b, 1.25 * y0, 1.25 * y1] for a, b, y0, y1 in wrapped])
+                    zoomed, _ = await doc.frame(dict(top=93, left=3), [])
+                    self.assertEqual((zoomed.width, zoomed.height), (275, 150))
+                    self.assertEqual([zoomed.pixel(x, 52) for x in (121, 122)], [(255, 165, 0), (255, 0, 0)])
+                    self.assertEqual([zoomed.pixel(122, y) for y in (56, 57, 106, 107)], [
+                        (255, 0, 0), (255, 215, 0), (255, 215, 0), (0, 0, 255),
+                    ])
                 finally:
                     if backend.browser:
                         await backend.browser.close()
