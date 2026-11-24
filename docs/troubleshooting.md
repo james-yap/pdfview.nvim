@@ -29,7 +29,7 @@ PyMuPDF and Typst must have prebuilt packages for your system:
 `'termguicolors'` must be on. Neovim turns it on by itself when the terminal supports it.
 
 Copying snapshots to the clipboard works on macOS only. Elsewhere the snapshot is saved
-and its path is shown.
+to `snapshot_dir` and its file name is shown.
 
 ## Limitations
 

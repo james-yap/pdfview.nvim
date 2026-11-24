@@ -1626,10 +1626,10 @@ local function snapshot(buf)
   if ranges then vim.cmd 'normal! \27' end
   if not try_call('snapshot', params) then return end
   set_pager(buf, true)
-  if vim.fn.has 'mac' ~= 1 then return notify('Saved snapshot ' .. png .. ' (clipboard copy is macOS-only)') end
+  if vim.fn.has 'mac' ~= 1 then return notify('Saved snapshot ' .. vim.fs.basename(png) .. ' to snapshot_dir') end
   local res = vim.system({ 'osascript', '-e', 'on run argv', '-e', 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)', '-e', 'end run', png }):wait()
   if res.code ~= 0 then return notify('Clipboard copy failed: ' .. res.stderr, vim.log.levels.ERROR) end
-  notify('Copied snapshot ' .. png)
+  notify 'Copied snapshot to clipboard'
 end
 
 -- Buffer lifecycle -----------------------------------------------------------

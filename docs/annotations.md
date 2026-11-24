@@ -99,8 +99,8 @@ lists:
   the cursor's page and the text around the cursor instead, with the character under
   the cursor in brackets and boxed in red on the image.
 
-The PNG goes into `snapshot_dir` (default `$TMPDIR/pdfview`) and its path is shown. On
-macOS it is also copied to the clipboard. Taking a snapshot returns to pager mode.
+The PNG goes into `snapshot_dir` (default `$TMPDIR/pdfview`). On macOS it is also copied
+to the clipboard; elsewhere its file name is shown. Taking a snapshot returns to pager mode.
 
 One image works everywhere: give a local agent its path, or paste it into a web chat.
 The model reads the page from the image. The caption adds what the image cannot show:
