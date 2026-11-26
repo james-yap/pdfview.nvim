@@ -23,18 +23,21 @@ end
 vim.o.laststatus = 2
 vim.o.statusline = '%{%v:lua.PdfviewTestStatusline()%}'
 
--- Only the terminal protocol is replaced; the PNG is kept so renders can be compared.
-local shows, latest = 0, nil
+-- Only the terminal write is replaced; kitty.show still formats its command and the frame is kept.
+local shows, latest, last_cmd = 0, nil, nil
 local kitty = require 'pdfview.kitty'
+local real_show = kitty.show
+api.nvim_ui_send = function(seq) last_cmd = seq end
 kitty.supported = function() return true end
 kitty.cell_size = function() return { width = 10, height = 20 } end
-kitty.show = function(png)
+kitty.show = function(path, cols, rows, opts)
+  local id = real_show(path, cols, rows, opts)
   shows = shows + 1
-  local f = assert(io.open(png, 'rb'))
+  local f = assert(io.open(path, 'rb'))
   latest = f:read '*a'
   f:close()
-  os.remove(png)
-  return shows
+  os.remove(path)
+  return id
 end
 kitty.delete = function() end
 
@@ -430,6 +433,7 @@ step('typing renders the preview', function()
   keys 'i$ x^2 $<Esc>'
 end, function() return shows > mark and preview_drawn() end, function()
   assert(#vim.diagnostic.get(typst_buf) == 0, vim.inspect(vim.diagnostic.get(typst_buf)))
+  assert(last_cmd and last_cmd:find(',f=100,', 1, true), 'Typst preview did not send PNG: ' .. tostring(last_cmd))
 end)
 step('a compile error is a diagnostic on its line', function() keys 'o#foo(<Esc>' end,
   function() return #vim.diagnostic.get(typst_buf) > 0 end, function()
