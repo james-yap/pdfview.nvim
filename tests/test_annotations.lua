@@ -275,7 +275,7 @@ end)
 hover_cycle('q', 'q', function(t) return t:find('existing note', 1, true) and not t:find('edited', 1, true) end)
 hover_cycle('Esc', '<Esc>', function(t) return t:find('existing note', 1, true) and not t:find('edited', 1, true) end)
 
-step('<leader>pn opens the imported plain note in the Typst editor', function() keys ' pn' end, editing, function()
+step('gn opens the imported plain note in the Typst editor', function() keys 'gn' end, editing, function()
     note_win = cur()
     note_buf = api.nvim_win_get_buf(note_win)
     assert(note_buf ~= buf)
@@ -294,7 +294,7 @@ step('writing the note saves it into the PDF state', function() keys ':w<CR>' en
     check_state(true)
     assert(is_typst 'existing note edited', 'a note written by pdfview is not marked Typst')
   end)
-step('q closes the saved note', function() keys 'q' end,
+step('Ctrl-Q closes the saved note', function() keys '<C-q>' end,
   function() return not api.nvim_win_is_valid(note_win) and cur() == st().focus and ready() end, function()
     assert(#floats() == 0)
     check_state(true)
@@ -308,7 +308,7 @@ step(':w writes the PDF and clears the flag', function() keys ':w<CR>' end,
     check_state(false)
   end)
 
-step('<leader>pn reopens the saved note', function() keys ' pn' end, editing, function()
+step('gn reopens the saved note', function() keys 'gn' end, editing, function()
     note_win = cur()
     note_buf = api.nvim_win_get_buf(note_win)
     assert(note_text(note_win) == 'existing note edited', vim.inspect(note_text(note_win)))
@@ -327,7 +327,7 @@ step('undo cannot erase the note text loaded from the PDF', function() keys_sync
     assert(not vim.bo[note_buf].modified)
     check_state(false)
   end)
-step('q closes the unchanged note without saving', function() keys 'q' end,
+step('Ctrl-Q closes the unchanged note without saving', function() keys '<C-q>' end,
   function() return not api.nvim_win_is_valid(note_win) and cur() == st().focus and ready() end, function()
     check_state(false)
   end)
@@ -418,7 +418,7 @@ local function preview_drawn()
   local line = api.nvim_buf_get_lines(preview_buf, 0, 1, false)[1] or ''
   return line:sub(1, 4) == vim.fn.nr2char(0x10EEEE)
 end
-step('visual <leader>pn opens the note editor beside its preview', function() keys '0wwve pn' end, editing, function()
+step('visual gn opens the note editor beside its preview', function() keys '0wwvegn' end, editing, function()
     typst_win, typst_buf = cur(), api.nvim_get_current_buf()
     local other = floats()[1] == typst_win and floats()[2] or floats()[1]
     preview_buf = api.nvim_win_get_buf(other)
@@ -444,7 +444,7 @@ step('fixing it clears the diagnostic', function()
   mark = shows
   keys 'dd'
 end, function() return #vim.diagnostic.get(typst_buf) == 0 and shows > mark end)
-step('q saves the Typst note and closes both windows', function() keys 'q' end,
+step('Ctrl-Q saves the Typst note and closes both windows', function() keys '<C-q>' end,
   function() return #floats() == 0 and cur() == st().focus and ready() end, function()
     assert(vim.bo[buf].modified)
   end)

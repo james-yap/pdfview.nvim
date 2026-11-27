@@ -77,8 +77,8 @@ Scrolling keeps the cursor on screen. In other windows on the same buffer (see
 | `<leader>ph` | x | Highlight the selection |
 | `<leader>pu` | x | Underline the selection |
 | `<leader>ps` | x | Strike out the selection |
-| `<leader>pn` | x | Highlight the selection and write a note on it |
-| `<leader>pn` | n | Edit the note of the annotation under the cursor |
+| `gn` | x | Highlight the selection and write a note on it |
+| `gn` | n | Edit the note of the annotation under the cursor |
 | `<leader>pd` | n | Delete the annotation under the cursor |
 | `<leader>pl` | n | List all annotations in the quickfix list |
 | `K` | n | Show the note under the cursor; press again to focus it |

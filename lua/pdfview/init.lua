@@ -49,6 +49,7 @@ M.config = {
     prev_page = { '[p', '<C-k>', '<PageUp>' },
     leap = nil,
     hover = 'K',
+    note = 'gn',
     undo = 'u',
     redo = '<C-r>',
   },
@@ -1402,7 +1403,7 @@ local function open_typst_editor(nbuf)
   local win = api.nvim_open_win(
     nbuf,
     true,
-    vim.tbl_extend('force', editor, style, { title = ' Typst note ', footer = ' :w save · q save and close ', footer_pos = 'center' })
+    vim.tbl_extend('force', editor, style, { title = ' Typst note ', footer = ' :w save · <C-q> save and close ', footer_pos = 'center' })
   )
   -- Shaped like a page view's state, so show() can draw into it.
   local ed = { pane = { buf = api.nvim_create_buf(false, true) } }
@@ -1489,7 +1490,7 @@ local function edit_note(buf, annot)
     return true
   end
   api.nvim_create_autocmd('BufWriteCmd', { buffer = nbuf, callback = save })
-  vim.keymap.set('n', 'q', function()
+  vim.keymap.set('n', '<C-q>', function()
     if not vim.bo[nbuf].modified or save() then api.nvim_win_close(win, true) end
   end, { buffer = nbuf, desc = 'Save note and close' })
 end
@@ -1760,8 +1761,8 @@ local function setup_buffer(buf)
     map('x', prefixed 'h', function() annotate(buf, 'highlight') end, 'highlight selection')
     map('x', prefixed 'u', function() annotate(buf, 'underline') end, 'underline selection')
     map('x', prefixed 's', function() annotate(buf, 'strikeout') end, 'strike out selection')
-    map('x', prefixed 'n', function() annotate(buf, 'highlight', true) end, 'highlight selection with note')
-    map('n', prefixed 'n', function() edit_under_cursor(buf) end, 'edit note under cursor')
+    map('x', keys.note, function() annotate(buf, 'highlight', true) end, 'highlight selection with note')
+    map('n', keys.note, function() edit_under_cursor(buf) end, 'edit note under cursor')
     map('n', prefixed 'd', function() delete_under_cursor(buf) end, 'delete annotation under cursor')
     map('n', prefixed 'l', function() list(buf) end, 'list annotations')
     map('n', keys.hover, function() hover_note(buf) end, 'show note under cursor')

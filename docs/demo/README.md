@@ -95,7 +95,7 @@ so the scrollbar has pills: `]p dd mb ]p d mc gg`.
 | --- | --- | --- |
 | `leap.gif` | — | `f` `bo`, wait, label `s` (to "bottom"); `f` `si`, wait, label `n` (the sin in equation 1). Labels depend on where the cursor is, so rehearse once and look at them first. |
 | `annotations.gif` | — | `/light s<CR>` `vee` `<leader>ph`; `/simple h<CR>` `vee` `<leader>pu`; `/the vertical<CR>` `wve` `<leader>ps`; `u`, `<C-r>` (still in cursor mode: in pager mode `u` pans); `<Esc>`. Sped up 1.3×. |
-| `typst.gif` | `/light s<CR>` | `vee` `<leader>pn` `i`, type `Massless string, so only $l$ sets the period:<CR>`, then `$  $<Left><Left>` before typing `T = 2 pi sqrt(l / g)`. The closed `$ $` lets the preview grow with each key; autopairs adds the `)`. Then `<Esc>` `q` `K`. Sped up 1.2×. |
+| `typst.gif` | `/light s<CR>` | `vee` `gn` `i`, type `Massless string, so only $l$ sets the period:<CR>`, then `$  $<Left><Left>` before typing `T = 2 pi sqrt(l / g)`. The closed `$ $` lets the preview grow with each key; autopairs adds the `)`. Then `<Esc>` `<C-q>` `K`. Sped up 1.2×. |
 | `marks.gif` | `]p d` | `ma`, `gg`, `'a`, `''`, `''` |
 | `scrollbar.gif` | the three annotations from the annotations clip, then `gg` | `/pendulum` (type slowly: incsearch tints live), `<CR>`, `n` × 3, `ma`, `gg` |
 | `hero.png` | the annotations and the Typst note as above, `:noh`, cursor on "light string" (`:call search('light s')`), `c` `zt` `ma` | `K`, then the still. Close any focused preview first (`q`), or `K` focuses it instead of opening one under the cursor. |
@@ -127,8 +127,8 @@ No keycast plugin is used. `social.keys.json` is the key log of the first take.
    there, and draws the keycaps.
 
 Keys in the first take, starting from the top of the document in pager mode: `/`
-`period` `<CR>` `ve` `<leader>pn` `i`, type `Small swings only:<CR>`, `$  $`
-`<Left><Left>`, type `T = 2 pi sqrt(l / g)`, `<Esc>` `q` `K`, then `/` `pendulum` `<CR>`
+`period` `<CR>` `ve` `gn` `i`, type `Small swings only:<CR>`, `$  $`
+`<Left><Left>`, type `T = 2 pi sqrt(l / g)`, `<Esc>` `<C-q>` `K`, then `/` `pendulum` `<CR>`
 `n` `n` `n`. Give each key 150–300 ms and each typed character 70–110 ms.
 
 ## Gotchas

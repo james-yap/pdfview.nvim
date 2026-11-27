@@ -50,14 +50,14 @@ hold maths, for example `$ V = L^3 $`.
 
 ### Writing a note
 
-`<leader>pn` on a selection highlights it and opens the note editor. On an existing
-annotation, it edits that annotation's note.
+`gn` on a selection highlights it and opens the note editor. `gn` on an existing
+annotation edits that annotation's note.
 
 The editor shows the source next to a live preview: side by side on a wide terminal,
 one above the other on a tall one. Compile errors show as diagnostics on their lines,
 and the preview keeps the last version that compiled.
 
-- `:w` saves the note into the PDF in memory; `q` saves and closes.
+- `:w` saves the note into the PDF in memory; `<C-q>` saves and closes.
 - Saving an empty note removes it and leaves a plain highlight.
 - Inside the editor, `u` undoes your typing, as in any buffer.
 
@@ -84,7 +84,7 @@ private `/PdfviewTypst` key. Other PDF viewers ignore the key and show the sourc
 plain note.
 
 Notes written in other programs do not have the key, so `K` shows them as plain text.
-Editing one with `<leader>pn` and saving turns it into a Typst note.
+Editing one with `gn` and saving turns it into a Typst note.
 
 ## Snapshots for agents
 

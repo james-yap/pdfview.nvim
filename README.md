@@ -30,9 +30,9 @@ annotations, and pdfview shows theirs.
 
 ![Leader-p n on a selection opens a Typst editor beside a live preview; typing a sentence and the display formula T = 2 pi sqrt(l / g) renders it as it is typed; q saves, and K shows the note rendered](docs/media/typst.gif)
 
-`<leader>pn` on a selection opens a note with a live preview. Notes are written in
-[Typst](https://typst.app/docs/), so they can hold maths. `K` shows the note under the
-cursor.
+`gn` on a selection opens a note with a live preview; on an existing annotation it edits
+its note. Notes are written in [Typst](https://typst.app/docs/), so they can hold
+maths. `<C-q>` saves and closes the editor. `K` shows the note under the cursor.
 
 ### Scrollbar
 
@@ -103,7 +103,7 @@ motions, search and visual selection work on the page text. `<Esc>` goes back.
 | `]p` / `[p`, `<C-j>` / `<C-k>` | Next / previous page |
 | `/`, `n` / `N` | Search |
 | `<leader>ph` / `pu` / `ps` | Highlight / underline / strike out the selection |
-| `<leader>pn` | Write or edit a note |
+| `gn` | Write a note on the selection / edit the note under the cursor |
 | `K` | Show the note under the cursor |
 | `]a` / `[a` | Next / previous annotation |
 | `u` / `<C-r>` | Undo / redo annotations (cursor mode) |
@@ -157,7 +157,7 @@ require('pdfview').setup {
     prefix = '<leader>p', -- prefix for the annotation and snapshot keys
     next_annotation = ']a', prev_annotation = '[a',
     next_page = { ']p', '<C-j>', '<PageDown>' }, prev_page = { '[p', '<C-k>', '<PageUp>' },
-    hover = 'K', undo = 'u', redo = '<C-r>',
+    hover = 'K', note = 'gn', undo = 'u', redo = '<C-r>',
     leap = nil, -- nil: your keys for <Plug>(leap); a string: this key; false: off
   },
   snapshot_dir = nil, -- where snapshots go; nil: $TMPDIR/pdfview
