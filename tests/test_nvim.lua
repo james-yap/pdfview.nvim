@@ -198,6 +198,34 @@ step('the dragged selection yanks its text', function() keys('y') end,
     local text = vim.fn.getreg '"'
     assert(#text > 1 and drag_line:find(text, 1, true), vim.inspect { text, drag_line })
   end)
+local function clicks(n, col)
+  for _ = 1, n do
+    mouse('press', col)
+    mouse('release', col)
+  end
+end
+local word_line
+step('double-clicking the page selects the clicked word', function() clicks(2, 6) end,
+  function() return ready() and vim.fn.mode() == 'v' end, function()
+    assert(api.nvim_get_current_win() == st().focus)
+    word_line = vim.fn.getline '.'
+    local tinted = vim.tbl_filter(function(m) return m.color == 0xA8D1FF end, vim.json.decode(st().render_key)[4])
+    assert(#tinted == 1, 'the clicked word is not tinted on the page')
+  end)
+step('the double-clicked word yanks alone', function() keys('y') end,
+  function() return ready() and vim.fn.mode() == 'n' end, function()
+    local text = vim.fn.getreg '"'
+    assert(text:match '^%w+$' and word_line:find(text, 1, true), vim.inspect { text, word_line })
+  end)
+-- Another column, so Neovim starts a new click count instead of counting on from the double-click.
+step('triple-clicking the page selects the clicked line', function() clicks(3, 7) end,
+  function() return ready() and vim.fn.mode() == 'V' end, function()
+    assert(vim.fn.getline '.' == word_line, vim.inspect { vim.fn.getline '.', word_line })
+  end)
+step('the triple-clicked line yanks whole', function() keys('y') end,
+  function() return ready() and vim.fn.mode() == 'n' end, function()
+    assert(vim.fn.getreg '"' == word_line .. '\n' and vim.fn.getregtype '"' == 'V')
+  end)
 local plain
 step('another window makes PDF cursor hollow', function() vim.cmd.vsplit(); vim.cmd.enew(); plain = api.nvim_get_current_win() end,
   function() return ready() and outline() end)

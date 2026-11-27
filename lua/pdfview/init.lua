@@ -1878,9 +1878,13 @@ local function setup_buffer(buf)
     page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
     page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
     page_map('<LeftDrag>', function() drag(buf) end, 'select by dragging over the page', { mouse = true })
-    map({ 'n', 'x' }, '<LeftMouse>', function()
-      if not click(buf) then api.nvim_feedkeys(vim.keycode '<LeftMouse>', 'n', false) end
-    end, 'move the cursor to the clicked character')
+    -- Repeated clicks select the clicked word, its line, then a block, like Vim.
+    for lhs, select in pairs { ['<LeftMouse>'] = '', ['<2-LeftMouse>'] = 'viw', ['<3-LeftMouse>'] = 'V', ['<4-LeftMouse>'] = '\22' } do
+      map({ 'n', 'x' }, lhs, function()
+        if not click(buf) then return api.nvim_feedkeys(vim.keycode(lhs), 'n', false) end
+        if select ~= '' then vim.cmd('normal! ' .. select) end
+      end, select == '' and 'move the cursor to the clicked character' or 'select by clicking repeatedly')
+    end
   end
 end
 

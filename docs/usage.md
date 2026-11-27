@@ -65,6 +65,7 @@ In cursor mode these keys do what they do in Vim, and `u` undoes annotation chan
 | `]p` / `[p`, `<C-j>` / `<C-k>`, `<PageDown>` / `<PageUp>` | Go to the top of the next / previous page; inside a page, `[p` goes to its top first (takes a count) |
 | Left click | Move the cursor to the character you clicked |
 | Left drag | Select the text from where you pressed to where the mouse is |
+| Double / triple click | Select the clicked word / line |
 
 Scrolling keeps the cursor on screen. In other windows on the same buffer (see
 [Search and selection](#search-and-selection)) these keys work as usual.
@@ -96,7 +97,7 @@ the cursor is orange, so `n` and `N` are easy to follow in pager mode too. Match
 tinted within one line; a pattern that spans lines still moves the cursor.
 
 Selections and yanks follow the text's reading order, not a rectangle on the screen.
-Select with `v` or `V`; dragging the mouse does not select.
+Select with `v` or `V`, or drag the mouse over the page.
 
 The page text is the PDF's extracted text layer. To read it as plain text, for example
 to see what a yank will copy, `:split` the PDF window: other windows on the buffer show
