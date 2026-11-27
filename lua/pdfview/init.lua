@@ -1011,26 +1011,42 @@ local function screen_line(buf, where)
 end
 
 
---- Move the cursor to the character under a mouse click on the pages.
---- Returns false when the click was not on the pages.
-local function click(buf)
+--- {lnum, byte col} of the character under the mouse on the pages, or nil when
+--- the mouse is not over them.
+local function mouse_char(buf)
   local st = states[buf]
   local pos = vim.fn.getmousepos()
-  if not (st and st.view and covered(st) and pos.winid == st.host) then return false end
+  if not (st and st.view and covered(st) and pos.winid == st.host) then return end
   local cell, v = kitty.cell_size(), st.view
-  if pos.winrow < 1 or pos.winrow > v.rows or pos.wincol < 1 or pos.wincol > v.cols then return false end
+  if pos.winrow < 1 or pos.winrow > v.rows or pos.wincol < 1 or pos.wincol > v.cols then return end
   local L = v.layout
   local y = v.top + (pos.winrow - 0.5) * cell.height
   local i = page_at(L, y)
   local s = L.scales[i]
   local hit = try_call('hit', { key = buf, page = i - 1, x = (pos.wincol - 0.5) * cell.width / s, y = (y - L.tops[i]) / s })
-  local win = st.focus
+  local lnum = hit and hit[1] or st.headers[i]
+  return { lnum, hit and byte_index(st.lines[lnum], hit[2]) or 0 }
+end
+
+--- Move the cursor to the character under a mouse click on the pages.
+--- Returns false when the click was not on the pages.
+local function click(buf)
+  local char = mouse_char(buf)
+  if not char then return false end
+  local win = states[buf].focus
   if vim.fn.mode():match '^[vV\22]' then vim.cmd 'normal! \27' end
   if api.nvim_get_current_win() ~= win then api.nvim_set_current_win(win) end
-  local lnum = hit and hit[1] or st.headers[i]
-  api.nvim_win_set_cursor(win, { lnum, hit and byte_index(st.lines[lnum], hit[2]) or 0 })
+  api.nvim_win_set_cursor(win, char)
   set_pager(buf, false)
   return true
+end
+
+--- Select from where the mouse was pressed to the character under the mouse.
+local function drag(buf)
+  local char = mouse_char(buf)
+  if not char then return end
+  if vim.fn.mode() == 'n' then vim.cmd 'normal! v' end
+  api.nvim_win_set_cursor(states[buf].focus, char)
 end
 
 -- leap.nvim on the page view -----------------------------------------------------
@@ -1861,7 +1877,7 @@ local function setup_buffer(buf)
   else
     page_map(keys.next_page, function() jump_page(buf, 1, vim.v.count1) end, 'next page')
     page_map(keys.prev_page, function() jump_page(buf, -1, vim.v.count1) end, 'previous page')
-    page_map('<LeftDrag>', function() end, 'ignore drags on the page', { mouse = true })
+    page_map('<LeftDrag>', function() drag(buf) end, 'select by dragging over the page', { mouse = true })
     map({ 'n', 'x' }, '<LeftMouse>', function()
       if not click(buf) then api.nvim_feedkeys(vim.keycode '<LeftMouse>', 'n', false) end
     end, 'move the cursor to the clicked character')

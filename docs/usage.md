@@ -17,7 +17,7 @@ document.
 stateDiagram-v2
     direction LR
     [*] --> Pager: open a .pdf
-    Pager --> Cursor: c, v / V / Ctrl-v, click, Leap
+    Pager --> Cursor: c, v / V / Ctrl-v, click or drag, Leap
     Cursor --> Pager: Esc, snapshot
     Pager: Pager mode (keys scroll, no cursor)
     Cursor: Cursor mode (Vim motions, selections, annotations)
@@ -32,8 +32,8 @@ work. The view follows the cursor, tints its line or selection and boxes the cha
 under it. The cursor turns hollow when you leave the PDF window or the terminal loses
 focus.
 
-To enter cursor mode, press `c`, start a selection with `v`, `V` or `<C-v>`, click on a
-page, or start a Leap jump. To go back to pager mode, press `<Esc>` in normal mode (the
+To enter cursor mode, press `c`, start a selection with `v`, `V` or `<C-v>`, click or
+drag on a page, or start a Leap jump. To go back to pager mode, press `<Esc>` in normal mode (the
 first `<Esc>` ends a selection), cancel a Leap jump, or take a snapshot. Your own
 `<Esc>` mapping, such as `:nohlsearch`, still runs.
 
@@ -64,6 +64,7 @@ In cursor mode these keys do what they do in Vim, and `u` undoes annotation chan
 | `H` / `M` / `L` | Move to a line near the top / middle / bottom |
 | `]p` / `[p`, `<C-j>` / `<C-k>`, `<PageDown>` / `<PageUp>` | Go to the top of the next / previous page; inside a page, `[p` goes to its top first (takes a count) |
 | Left click | Move the cursor to the character you clicked |
+| Left drag | Select the text from where you pressed to where the mouse is |
 
 Scrolling keeps the cursor on screen. In other windows on the same buffer (see
 [Search and selection](#search-and-selection)) these keys work as usual.

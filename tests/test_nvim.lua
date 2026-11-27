@@ -168,6 +168,36 @@ step('click another character on the page', function()
   api.nvim_input_mouse('left', 'press', '', 0, host_pos[1] + 8, host_pos[2] + 65)
   api.nvim_input_mouse('left', 'release', '', 0, host_pos[1] + 8, host_pos[2] + 65)
 end, function() return ready() and cursor()[1] ~= before_click[1] end)
+-- Neovim reports only the latest mouse position, so send each event once the previous one is handled.
+local function mouse(action, col)
+  local host_pos = api.nvim_win_get_position(st().host)
+  api.nvim_input_mouse('left', action, '', 0, host_pos[1] + 8, host_pos[2] + col)
+end
+local drag_from
+step('press on the page', function() mouse('press', 6) end,
+  function() return ready() and vim.fn.mode() == 'n' and vim.fn.getline('.'):find('left', 1, true) end,
+  function() drag_from = cursor() end)
+step('dragging selects from the press to the mouse', function() mouse('drag', 10) end,
+  function() return ready() and vim.fn.mode() == 'v' and cursor()[2] > drag_from[2] end,
+  function() assert(vim.deep_equal({ vim.fn.line 'v', vim.fn.col 'v' - 1 }, drag_from)) end)
+local drag_col
+step('dragging further extends the selection', function()
+  drag_col = cursor()[2]
+  mouse('drag', 14)
+end, function() return ready() and cursor()[2] > drag_col end)
+local drag_line
+step('releasing keeps the selection tinted on the page', function() mouse('release', 14) end, function() return ready() end, function()
+  assert(vim.fn.mode() == 'v' and api.nvim_get_current_win() == st().focus)
+  assert(vim.deep_equal({ vim.fn.line 'v', vim.fn.col 'v' - 1 }, drag_from))
+  drag_line = vim.fn.getline '.'
+  local tinted = vim.tbl_filter(function(m) return m.color == 0xA8D1FF end, vim.json.decode(st().render_key)[4])
+  assert(#tinted == 1, 'the dragged selection is not tinted on the page')
+end)
+step('the dragged selection yanks its text', function() keys('y') end,
+  function() return ready() and vim.fn.mode() == 'n' end, function()
+    local text = vim.fn.getreg '"'
+    assert(#text > 1 and drag_line:find(text, 1, true), vim.inspect { text, drag_line })
+  end)
 local plain
 step('another window makes PDF cursor hollow', function() vim.cmd.vsplit(); vim.cmd.enew(); plain = api.nvim_get_current_win() end,
   function() return ready() and outline() end)
